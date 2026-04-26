@@ -1,0 +1,66 @@
+# DiffDock reward-filtering baseline experiment config.
+# Purpose:
+# - Run pretrained DiffDock on the test split
+# - Generate multiple candidate docking poses per complex
+# - Score each candidate with a reward function (negative RMSD)
+# - Select the best candidate by reward
+# - Evaluate selected poses with RMSD metrics
+# - Save artifacts for comparison vs baseline and rerank-baseline
+
+experiment:
+  # Logical run identity used for logging and artifact naming.
+  name: diffdock_reward_filtering
+  # Model family used by this config.
+  model: diffdock
+  # Execution mode for reward-based sample selection (no model training).
+  mode: reward_filtering
+  # RNG seed for reproducibility.
+  seed: 42
+
+dataset:
+  # Dataset source for this experiment.
+  name: pdbbind
+  # Which split to evaluate.
+  split: test
+  # Manifest listing complexes and input file paths.
+  manifest_path: data/processed/diffdock/manifests/test_manifest.json
+
+model:
+  # Pretrained DiffDock checkpoint used for pose generation.
+  checkpoint_path: artifacts/checkpoints/diffdock/pretrained.pt
+
+generation:
+  # Number of candidate poses generated per complex before reward selection.
+  num_samples: 40
+  # Confidence reranking disabled to isolate reward-filtering behavior.
+  use_confidence_reranking: false
+
+reward:
+  # Enable reward computation on generated candidates.
+  enabled: true
+  # Reward definition: higher is better; negative_rmsd prefers lower RMSD.
+  type: negative_rmsd
+  # Keep raw reward values (no scaling/standardization).
+  normalize: false
+  # Select final pose by maximum reward.
+  select_best_by_reward: true
+
+evaluation:
+  # Pose is considered successful if RMSD <= threshold (Å).
+  rmsd_threshold: 2.0
+  # Report metrics at these cutoffs.
+  top_k: [1, 5, 10]
+
+outputs:
+  # Directory for this run's predictions, rewards, logs, and metrics.
+  run_dir: artifacts/runs/diffdock_reward_filtering_seed42
+  # Save all generated candidate poses.
+  save_generated_samples: true
+  # Save per-candidate reward scores.
+  save_rewards: true
+  # Save the reward-selected final pose per complex.
+  save_selected_samples: true
+  # Save evaluation metrics (e.g., JSON/CSV depending on pipeline).
+  save_metrics: true
+  # Save execution logs for debugging and reproducibility.
+  save_logs: true

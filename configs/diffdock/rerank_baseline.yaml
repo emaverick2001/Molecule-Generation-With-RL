@@ -1,0 +1,55 @@
+# DiffDock rerank baseline experiment config.
+# Purpose:
+# - Run pretrained DiffDock on the test split
+# - Generate multiple candidate docking poses per complex
+# - Re-rank candidates using DiffDock confidence model
+# - Evaluate ranked poses with RMSD metrics
+# - Save artifacts for comparison vs non-reranked baseline and post-trained models
+
+experiment:
+  # Logical run identity used for logging and artifact naming.
+  name: diffdock_rerank_baseline
+  # Model family used by this config.
+  model: diffdock
+  # Execution mode for baseline + confidence re-ranking.
+  mode: rerank_baseline
+  # RNG seed for reproducibility.
+  seed: 42
+
+dataset:
+  # Dataset source for this experiment.
+  name: pdbbind
+  # Which split to evaluate.
+  split: test
+  # Manifest listing complexes and input file paths.
+  manifest_path: data/processed/diffdock/manifests/test_manifest.json
+
+model:
+  # Base DiffDock checkpoint used for pose generation.
+  checkpoint_path: artifacts/checkpoints/diffdock/pretrained.pt
+  # Confidence head/model used to re-rank generated poses.
+  confidence_model_path: artifacts/checkpoints/diffdock/confidence_model.pt
+
+generation:
+  # Number of candidate poses generated per complex before ranking.
+  num_samples: 40
+  # Enable confidence-based re-ranking of generated poses.
+  use_confidence_reranking: true
+
+evaluation:
+  # Pose is considered successful if RMSD <= threshold (Å).
+  rmsd_threshold: 2.0
+  # Report metrics for top-ranked subsets.
+  top_k: [1, 5, 10]
+
+outputs:
+  # Directory for this run's predictions, logs, and metrics.
+  run_dir: artifacts/runs/diffdock_rerank_baseline_seed42
+  # Save all generated candidate poses.
+  save_generated_samples: true
+  # Save re-ranked pose lists/scores.
+  save_ranked_samples: true
+  # Save evaluation metrics (e.g., JSON/CSV depending on pipeline).
+  save_metrics: true
+  # Save execution logs for debugging and reproducibility.
+  save_logs: true

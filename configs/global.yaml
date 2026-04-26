@@ -1,0 +1,104 @@
+# Global config used by every pipeline stage (baseline, post-training, generation, evaluation).
+# Think of this as the shared "default settings" file.
+# Model-specific behavior should live in:
+# - configs/diffdock/*
+# - configs/pepflow/*
+
+project:
+  # Run metadata used in logs, reports, and artifact naming.
+  name: molecule-reward-posttraining
+  description: Reward-based post-training for target-conditioned molecular generation
+  version: 0.1.0
+  # Current development milestone (helps track experiment maturity).
+  stage: mvp_diffdock
+
+paths:
+  # Repo-relative paths for core directories.
+  root_dir: .
+  data_dir: data
+  raw_data_dir: data/raw
+  processed_data_dir: data/processed
+  artifact_dir: artifacts
+  run_dir: artifacts/runs
+  checkpoint_dir: artifacts/checkpoints
+  generated_samples_dir: artifacts/generated_samples
+  rewards_dir: artifacts/rewards
+  metrics_dir: artifacts/metrics
+  logs_dir: artifacts/logs
+
+datasets:
+  # Shared defaults for DiffDock data locations.
+  diffdock:
+    name: pdbbind
+    raw_dir: data/raw/pdbbind
+    processed_dir: data/processed/diffdock
+    split_dir: data/processed/diffdock/splits
+    # Canonical manifest used to resolve sample paths and metadata.
+    manifest_path: data/processed/diffdock/manifests/manifest.json
+
+  # Shared defaults for PepFlow data locations.
+  pepflow:
+    name: pepflow
+    raw_dir: data/raw/pepflow
+    processed_dir: data/processed/pepflow
+    split_dir: data/processed/pepflow/splits
+    manifest_path: data/processed/pepflow/manifests/manifest.json
+
+models:
+  # Shared checkpoint paths for DiffDock.
+  diffdock:
+    checkpoint_dir: artifacts/checkpoints/diffdock
+    pretrained_checkpoint: artifacts/checkpoints/diffdock/pretrained.pt
+
+  # Shared checkpoint paths for PepFlow.
+  pepflow:
+    checkpoint_dir: artifacts/checkpoints/pepflow
+    pretrained_checkpoint: artifacts/checkpoints/pepflow/pretrained.pt
+
+runtime:
+  # Reproducible execution defaults.
+  # deterministic=true improves reproducibility but may reduce speed.
+  seed: 42
+  device: cuda
+  num_workers: 4
+  deterministic: true
+  mixed_precision: false
+
+generation:
+  # Default generation settings used unless overridden per experiment.
+  default_num_samples: 40
+  save_generated_samples: true
+  save_intermediate_outputs: false
+
+evaluation:
+  # Core evaluation defaults for docking quality.
+  # Success criterion: RMSD <= rmsd_success_threshold (Angstroms).
+  rmsd_success_threshold: 2.0
+  top_k_values: [1, 5, 10]
+  compute_diversity: true
+  compute_reward_correlation: true
+
+logging:
+  # Logging + metric persistence policy for all runs.
+  log_level: info
+  save_config_copy: true
+  save_metrics_json: true
+  save_rewards_csv: true
+  save_errors_log: true
+  use_wandb: false
+
+reproducibility:
+  # Metadata captured to make runs auditable/re-runnable.
+  save_git_commit: true
+  save_environment: true
+  save_random_seed: true
+  save_dataset_manifest: true
+
+error_handling:
+  # Fault-tolerance policy:
+  # - skip bad samples
+  # - keep failure logs
+  # - stop early if too many failures occur
+  skip_invalid_samples: true
+  log_failed_samples: true
+  max_failed_samples_before_stop: 50

@@ -1,0 +1,48 @@
+# DiffDock baseline experiment config.
+# Purpose:
+# - Run pretrained DiffDock on the test split
+# - Generate candidate docking poses
+# - Evaluate pose quality with RMSD metrics
+# - Save run artifacts for later comparison against post-trained models
+
+experiment:
+  # Logical run identity used for logging and artifact naming.
+  name: diffdock_baseline
+  # Model family used by this config.
+  model: diffdock
+  # Execution mode (no reward-based post-training here).
+  mode: baseline
+  # RNG seed for reproducibility.
+  seed: 42
+
+dataset:
+  # Dataset source for this experiment.
+  name: pdbbind
+  # Which split to evaluate.
+  split: test
+  # Prebuilt manifest listing complexes and file paths for this split.
+  manifest_path: data/processed/diffdock/manifests/test_manifest.json
+
+model:
+  # Pretrained checkpoint used for baseline inference.
+  checkpoint_path: artifacts/checkpoints/diffdock/pretrained.pt
+
+generation:
+  # Number of candidate poses generated per complex.
+  num_samples: 40
+  # If true, rank/generated poses using DiffDock confidence head before evaluation.
+  use_confidence_reranking: false
+
+evaluation:
+  # Pose is considered successful if RMSD <= threshold (Å).
+  rmsd_threshold: 2.0
+  # Report success/quality metrics at these cutoffs.
+  top_k: [1, 5, 10]
+
+outputs:
+  # Directory for this run’s outputs (predictions, logs, metrics).
+  run_dir: artifacts/runs/diffdock_baseline_seed42
+  # Persist generated poses to disk.
+  save_generated_samples: true
+  # Persist computed evaluation metrics.
+  save_metrics: true

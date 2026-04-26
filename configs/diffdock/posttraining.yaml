@@ -1,0 +1,79 @@
+# DiffDock post-training experiment config.
+# Purpose:
+# - Start from a pretrained DiffDock checkpoint
+# - Generate pose candidates on training complexes
+# - Compute rewards for generated candidates
+# - Update model weights using reward-driven post-training (DDPO)
+# - Periodically save checkpoints
+# - Evaluate post-trained model on test data with RMSD metrics
+# - Save artifacts for comparison vs baseline methods
+
+experiment:
+  # Logical run identity used for logging and artifact naming.
+  name: diffdock_posttraining
+  # Model family used by this config.
+  model: diffdock
+  # Execution mode enabling training + evaluation pipeline.
+  mode: posttraining
+  # RNG seed for reproducibility.
+  seed: 42
+
+dataset:
+  # Dataset source for this experiment.
+  name: pdbbind
+  # Training manifest used during reward-based updates.
+  train_manifest_path: data/processed/diffdock/manifests/train_manifest.json
+  # Test manifest used for held-out evaluation after training.
+  test_manifest_path: data/processed/diffdock/manifests/test_manifest.json
+
+model:
+  # Starting checkpoint before post-training begins.
+  base_checkpoint_path: artifacts/checkpoints/diffdock/pretrained.pt
+  # Directory where post-trained checkpoints will be written.
+  output_checkpoint_dir: artifacts/checkpoints/diffdock/posttrained
+
+generation:
+  # Number of candidate poses sampled per complex during training/eval.
+  num_samples: 40
+
+posttraining:
+  # Master switch for post-training stage.
+  enabled: true
+  # Post-training algorithm (DDPO = reward-driven policy optimization).
+  method: ddpo
+  # Total optimizer update steps.
+  num_steps: 1000
+  # Learning rate for model updates.
+  learning_rate: 1e-5
+  # Number of samples per optimization batch.
+  batch_size: 8
+  # Save a checkpoint every N steps.
+  save_every: 250
+
+reward:
+  # Enable reward computation for generated candidates.
+  enabled: true
+  # Reward definition: higher is better; negative_rmsd favors lower RMSD.
+  type: negative_rmsd
+  # Keep raw reward scale (no normalization).
+  normalize: false
+
+evaluation:
+  # Pose is considered successful if RMSD <= threshold (Å).
+  rmsd_threshold: 2.0
+  # Report metrics at these cutoffs.
+  top_k: [1, 5, 10]
+
+outputs:
+  # Directory for this run’s outputs (checkpoints, samples, rewards, metrics, logs).
+  run_dir: artifacts/runs/diffdock_posttraining_seed42
+  # Persist intermediate/final model checkpoints.
+  save_checkpoints: true
+  # Persist generated poses to disk.
+  save_generated_samples: true
+  # Persist per-sample reward values.
+  save_rewards: true
+  # Persist evaluation metrics (e.g., JSON/CSV depending on pipeline).
+  save_metrics: true
+  # Persist execution logs for debugging and reproducibility.
+  save_logs: true

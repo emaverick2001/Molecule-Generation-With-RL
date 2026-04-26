@@ -1,0 +1,18 @@
+[project]
+name = "molecule-generation-with-rl"
+version = "0.1.0"
+description = "Molecule generation and docking experiments with RL/post-training"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "pyyaml>=6.0.2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
