@@ -1,149 +1,211 @@
-# Molecule-Generation-With-RL
+# Molecule Generation With RL
 
-- Integrating Symbolic Solvers into the Agentic Debugging Loop.
+Reward-based post-training experiments for target-conditioned molecular generation.
 
----
+This repository is an MVP research codebase for testing whether reward-driven
+post-training can improve molecular generation quality beyond pretrained
+sampling and post-hoc reranking. The current focus is DiffDock-style
+protein-ligand docking, with PepFlow peptide generation planned as the next
+stage.
 
-## Description
+## Project Goal
 
-- An in-depth paragraph about your project and overview of use.
+The project studies a simple question:
 
-## Getting Started
+> Can reward-based post-training improve the generated molecular structures
+> themselves, rather than only improving how generated samples are ranked?
 
-### Setup
+The intended workflow is:
 
-* How/where to download your program
-* Any modifications needed to be made to files/folders
+1. Load a molecular design task from a dataset manifest.
+2. Generate multiple candidate structures with a pretrained generator.
+3. Score candidates with task rewards such as RMSD, docking score, energy, or a
+   composite reward.
+4. Compare pretrained baselines, reranking/filtering baselines, and
+   reward-trained models.
+5. Save configs, generated samples, rewards, metrics, and logs for reproducible
+   analysis.
 
-```bash
-# 1. Clone the repo
-git clone https://github.com/emaverick2001/CS-527-Symbiotic-SWE.git
-cd CS-527-Symbiotic-SWE
+## Current Status
 
-# 2) Make sure Python 3.11 is available
-python3.11 --version
-# if not 
-brew install python@3.11
+Implemented:
 
-# 3) If Poetry is not installed, install it via Homebrew or pipx
-brew install poetry
+- Config loading and deep merging from `configs/global.yaml` plus experiment
+  YAML files.
+- Structured schemas for complexes, generated poses, reward records, and metric
+  records.
+- Run directory creation, config snapshots, artifact logging, and error logs.
+- A DiffDock baseline dry run that writes generated-sample manifests, reward
+  CSVs, and metric JSON files.
+- Unit tests for config loading, path handling, run logging, artifact logging,
+  and error logging.
 
-# 4) In the project root, create/use a local .venv
-cd "/Users/maver/Desktop/Coding Projects/AI/CS-527-Symbiotic-SWE"
-poetry config virtualenvs.in-project true
-poetry env use python3.11
-poetry install
+Planned / placeholder:
 
-# 5) Activate the environment
-source .venv/bin/activate
+- Real DiffDock model adapter and generation code.
+- Real RMSD, docking, energy, and composite reward implementations.
+- DDPO, DPO, and reward-backpropagation post-training loops.
+- PepFlow baseline and post-training pipelines.
+- End-to-end evaluation and full experiment orchestration scripts.
 
-# 6) Install git hooks 
-pre-commit install
+## Repository Layout
 
-# 7) Optional Checks
-poetry run pytest
-poetry run ruff check .
-poetry run mypy .
+```text
+configs/
+  global.yaml                       Shared paths, runtime, logging, evaluation defaults
+  diffdock/
+    baseline.yaml                   Pretrained DiffDock baseline config
+    rerank_baseline.yaml            Confidence reranking baseline config
+    reward_filtering.yaml           Reward filtering baseline config
+    posttraining.yaml               Reward-based post-training config
+  pepflow/                          Planned PepFlow configs
+
+src/
+  data/                             Dataset manifests, validation, preprocessing
+  generation/                       Generation entry points and sampling utilities
+  models/                           DiffDock and PepFlow adapters
+  pipeline/                         Baseline, post-training, evaluation runners
+  posttraining/                     DDPO, DPO, and reward-backprop trainers
+  rewards/                          RMSD, docking, energy, composite rewards
+  utils/                            Configs, schemas, paths, logging, seeds
+
+docs/
+  high_low_pipeline.md              System pipeline and artifact design
+  experiments.md                    Research questions, metrics, baselines, ablations
+  timeline.md                       Milestone plan and staged execution strategy
+
+tests/                              Unit tests for the implemented MVP utilities
+notebooks/                          Planned analysis and visualization notebooks
+scripts/                            Planned shell wrappers for experiment runs
 ```
 
-### How To Run
+Generated outputs are written under `artifacts/`, which is intentionally ignored
+by git.
 
-## Help
+## Setup
 
-- Any advise for common problems or issues
+Requirements:
 
-## Project Structure
+- Python `>=3.11,<3.13`
+- `uv`
 
-- The current project template supports the final package release of our codebase.
-- `CS-527-Symbiotic-SWE`
-  - `/.github/`
-    - Contains GitHub related files like workflows
-  - `/.gitignore`
-    - Specifies untracked files to ignore
-  - `/.pre-commit-config.yaml`
-    - Configurations for pre-commit hooks
-  - `/pyproject.toml`
-    - Project metadata and tool configurations
-  - `/poetry.lock`
-    - Lock file generated by poetry for dependencies
-  - `/README.md`
-  - `/assests/`
-  - `/data/`
-  - `/docs/`
-    - Documentation for the project
-  - `/examples/`
-  - `/scripts/`
-  - `/src/`
-    - Main package directory
-  - `/tests/`
-    - Test scripts and resources
+```bash
+git clone https://github.com/emaverick2001/Molecule-Generation-With-RL.git
+cd Molecule-Generation-With-RL
 
-## Workflows
+uv sync --dev
+```
 
-### Continuous Integration (CI) Workflow
+If you prefer to activate the environment manually:
 
-- Here's a clearer and more straightforward guideline of the steps for working with your codebase. If working in a small group or working on a simple project, some of the steps can be skipped.
+```bash
+source .venv/bin/activate
+```
 
-1. **Create Issue**
-   - Before starting, open a new issue in the repository detailing what you plan to implement. Assign the issue to yourself.
-2. **Sync Repo**
-   - Update your local repository to match the latest version of the remote repository.
-3. **Create Branch**
-   - Create a new branch for your task. Name it appropriately based on the type of task, such as `feature/feature-name`, `bug/bug-name`, or `exp/exp-name`.
-4. **Implement Code**
-   - Work on your task and make necessary changes to the codebase.
-5. **Test Locally**
-   - Run tests using tools like mypy, pytest, and pre-commit. Ensure all tests pass before proceeding.
-6. **Change Commit**
-   - Add and commit your changes to the branch, then push the branch to the repository.
-7. **Create PR**
-   - Open a Pull Request (PR) for the branch you've pushed.
-8. **Link PR to Issue**
-   - In your PR, include "Closes #ISSUE_NUM" to link it to the original issue.
-9. **Pass Continuous Integration**
-   - Ensure all GitHub Actions checks pass. If they fail, revise your code based on the errors reported.
-10. **Review PR Checklist**
-    - Verify that all items in the PR checklist are completed, such as updating documentation or adding package requirements.
-11. **Ask for Code Review**
-    - Invite a colleague to review your PR. One approved, Use the "Squash and Merge" option to merge your PR, ensuring a clean commit history.
-12. **Troubleshooting**
-    - If you break down the commit history or main branch, contact the repository owner for assistance with `rebase` or other needed actions.
+## Run Tests
 
-### Issue & Pull Request
+```bash
+uv run pytest
+```
 
-- An issue typically describes a new feature (`feature`), fixing an old bug (`bug`), launching a group of experiments (`exp`), or refactoring part of the code (`refactor`). Using different issue templates for different issues.
-- A PR typically implements the content mentioned in one issue.
-- Notice about the development:
-  1. When creating an issue, assign the responsible member for fixing that if possible
-  2. When creating a PR, make sure you uses `feature/feature-name`, `bug/bug-name`, `exp/exp-name` for its branch
-  3. When finishing one PR, make sure all the github action is passed and all the checks are done.
-  4. When merging one PR, make sure using `squash and merge` instead of `merge a pull request`.
-  5. Avoid making any direct commit to the `main` branch and try to avoid any `--force` push to any branch unless you are pretty sure about that.
+## Run the MVP DiffDock Baseline Dry Run
 
-## Version History
+The current baseline runner is a dry run. It does not invoke DiffDock yet; it
+simulates generated poses, reward records, and aggregate metrics to validate the
+experiment plumbing.
 
-* 0.2
-  * Various bug fixes and optimizations
-  * See [commit change]() or See [release history]()
-* 0.1
-  * Initial Release
+```bash
+uv run python -m src.pipeline.run_baseline --exist-ok
+```
+
+This writes a run directory similar to:
+
+```text
+artifacts/runs/diffdock_baseline_seed42/
+  config_snapshot.json
+  config.yaml
+  generated_samples_manifest.json
+  rewards.csv
+  metrics.json
+  errors.log
+```
+
+Use `--config` to run another DiffDock config through the same entry point once
+the corresponding pipeline behavior is implemented:
+
+```bash
+uv run python -m src.pipeline.run_baseline \
+  --config configs/diffdock/reward_filtering.yaml \
+  --exist-ok
+```
+
+## Experiment Design
+
+The planned evaluation compares reward-based post-training against several
+baselines:
+
+- Pretrained DiffDock with no post-training.
+- DiffDock with confidence reranking.
+- DiffDock with reward filtering and no weight updates.
+- DiffDock with reward-based post-training.
+- Later stages repeat the structure for PepFlow peptide generation.
+
+Primary metrics from `docs/experiments.md` include:
+
+- Top-1 RMSD.
+- Success@k for k = 1, 5, 10 using an RMSD threshold such as 2 Angstrom.
+- Mean best-of-N reward.
+- Average RMSD across generated samples.
+- Reward distribution shift.
+- Diversity and reward/RMSD correlation diagnostics.
+
+The staged plan is:
+
+1. Build and validate the DiffDock MVP pipeline.
+2. Add DiffDock reward-based post-training.
+3. Extend to PepFlow fixed-backbone peptide design.
+4. Extend to full PepFlow sequence-structure co-design.
+5. Add ablations, diagnostics, and exploratory inference-time guidance.
+
+## Data and Checkpoints
+
+Large datasets and model checkpoints are not stored in this repository. The
+configs assume the following repo-relative locations:
+
+```text
+data/raw/pdbbind/
+data/processed/diffdock/manifests/
+data/raw/pepflow/
+data/processed/pepflow/manifests/
+artifacts/checkpoints/diffdock/
+artifacts/checkpoints/pepflow/
+```
+
+The canonical DiffDock manifest fields are represented by `ComplexInput` in
+`src/utils/schemas.py`:
+
+```json
+{
+  "complex_id": "1abc",
+  "protein_path": "data/raw/pdbbind/1abc/protein.pdb",
+  "ligand_path": "data/raw/pdbbind/1abc/ligand.sdf",
+  "ground_truth_pose_path": "data/raw/pdbbind/1abc/ligand_gt.sdf",
+  "split": "test"
+}
+```
+
+## Development Notes
+
+- Keep experiment behavior config-driven through `configs/`.
+- Save every run under `artifacts/runs/` with a config snapshot.
+- Prefer adding small, testable pieces before connecting real model backends.
+- Do not commit generated artifacts, checkpoints, or raw datasets.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE.md file for details
+This project is licensed under the MIT License. See `LICENSE` for details.
 
 ## Authors
 
-- Contributors names and contact info
 - mae10@illinois.edu
-- buabeng2@illinois.edu
-
-## Acknowledgments
-
-Inspiration, code snippets, etc.
-
-* []()
-
-## Contribution
-
-- I welcome all kinds of contributions, e.g. adding more tools, better practices, and discussion on trade-offs.
+- junkun3@illinois.edu
