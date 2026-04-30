@@ -34,11 +34,16 @@ Implemented:
   YAML files.
 - Structured schemas for complexes, generated poses, reward records, and metric
   records.
+- PDBBind-style manifest building, loading, and validation utilities.
+- Dataset validation for missing files, empty files, wrong extensions,
+  duplicate complex IDs, and invalid split names.
+- A tiny 5-complex MVP PDBBind-style dataset generator for local smoke tests.
 - Run directory creation, config snapshots, artifact logging, and error logs.
-- A DiffDock baseline dry run that writes generated-sample manifests, reward
-  CSVs, and metric JSON files.
+- A DiffDock baseline dry run that loads the mini manifest, validates complexes,
+  and writes input manifests, validation reports, dataset summaries,
+  generated-sample manifests, reward CSVs, metric JSON files, and summaries.
 - Unit tests for config loading, path handling, run logging, artifact logging,
-  and error logging.
+  error logging, manifest creation, dataset loading, and validation.
 
 Planned / placeholder:
 
@@ -54,14 +59,14 @@ Planned / placeholder:
 configs/
   global.yaml                       Shared paths, runtime, logging, evaluation defaults
   diffdock/
-    baseline.yaml                   Pretrained DiffDock baseline config
+    baseline.yaml                   MVP mini-split DiffDock dry-run config
     rerank_baseline.yaml            Confidence reranking baseline config
     reward_filtering.yaml           Reward filtering baseline config
     posttraining.yaml               Reward-based post-training config
   pepflow/                          Planned PepFlow configs
 
 src/
-  data/                             Dataset manifests, validation, preprocessing
+  data/                             Dataset manifests, loading, validation, preprocessing
   generation/                       Generation entry points and sampling utilities
   models/                           DiffDock and PepFlow adapters
   pipeline/                         Baseline, post-training, evaluation runners
@@ -76,11 +81,13 @@ docs/
 
 tests/                              Unit tests for the implemented MVP utilities
 notebooks/                          Planned analysis and visualization notebooks
-scripts/                            Planned shell wrappers for experiment runs
+scripts/
+  create_tiny_pdbbind_mvp.py        Creates the mini PDBBind-style dataset and manifest
+  *.sh                              Planned shell wrappers for experiment runs
 ```
 
 Generated outputs are written under `artifacts/`, which is intentionally ignored
-by git.
+by git. Local data under `data/` is also ignored by git.
 
 ## Setup
 
@@ -108,27 +115,64 @@ source .venv/bin/activate
 uv run pytest
 ```
 
-## Run the MVP DiffDock Baseline Dry Run
+## Run the Mini MVP Experiment
 
-The current baseline runner is a dry run. It does not invoke DiffDock yet; it
-simulates generated poses, reward records, and aggregate metrics to validate the
-experiment plumbing.
+The fastest end-to-end check is the mini MVP experiment. It creates a tiny
+PDBBind-style dataset with 5 complexes, writes a mini split file, builds and
+validates a manifest, then runs the current DiffDock baseline dry run.
+
+```bash
+uv run python scripts/create_tiny_pdbbind_mvp.py --run-baseline --exist-ok
+```
+
+This command writes dataset files under:
+
+```text
+data/raw/pdbbind/
+  1abc/
+  2xyz/
+  3def/
+  4ghi/
+  5jkl/
+
+data/processed/diffdock/
+  splits/mini.txt
+  manifests/mini_manifest.json
+  manifests/mini_validation_report.json
+```
+
+It also writes a run directory named with the current date, model, mode, and
+seed, for example:
+
+```text
+artifacts/runs/2026-04-30_diffdock_baseline_seed42/
+  config.yaml
+  config_snapshot.json
+  input_manifest.json
+  validation_report.json
+  dataset_summary.json
+  generated_samples_manifest.json
+  rewards.csv
+  metrics.json
+  errors.log
+  summary.md
+```
+
+The mini dataset is synthetic and intended only to validate project plumbing.
+It is not a scientifically meaningful docking benchmark.
+
+## Run Only the Baseline Dry Run
+
+After `data/processed/diffdock/manifests/mini_manifest.json` exists, you can run
+the baseline dry run directly:
 
 ```bash
 uv run python -m src.pipeline.run_baseline --exist-ok
 ```
 
-This writes a run directory similar to:
-
-```text
-artifacts/runs/diffdock_baseline_seed42/
-  config_snapshot.json
-  config.yaml
-  generated_samples_manifest.json
-  rewards.csv
-  metrics.json
-  errors.log
-```
+The baseline runner does not invoke DiffDock yet. It loads the mini manifest,
+validates the records, then simulates generated poses, reward records, and
+aggregate metrics to validate the experiment artifact flow.
 
 Use `--config` to run another DiffDock config through the same entry point once
 the corresponding pipeline behavior is implemented:
@@ -170,16 +214,21 @@ The staged plan is:
 ## Data and Checkpoints
 
 Large datasets and model checkpoints are not stored in this repository. The
-configs assume the following repo-relative locations:
+MVP scripts and configs assume the following repo-relative locations:
 
 ```text
 data/raw/pdbbind/
+data/processed/diffdock/splits/
 data/processed/diffdock/manifests/
 data/raw/pepflow/
 data/processed/pepflow/manifests/
 artifacts/checkpoints/diffdock/
 artifacts/checkpoints/pepflow/
 ```
+
+The mini experiment creates synthetic files in `data/raw/pdbbind/` and
+`data/processed/diffdock/`. These paths are ignored by git, along with
+`artifacts/`.
 
 The canonical DiffDock manifest fields are represented by `ComplexInput` in
 `src/utils/schemas.py`:
@@ -190,9 +239,18 @@ The canonical DiffDock manifest fields are represented by `ComplexInput` in
   "protein_path": "data/raw/pdbbind/1abc/protein.pdb",
   "ligand_path": "data/raw/pdbbind/1abc/ligand.sdf",
   "ground_truth_pose_path": "data/raw/pdbbind/1abc/ligand_gt.sdf",
-  "split": "test"
+  "split": "mini"
 }
 ```
+
+Manifest and dataset helpers live in:
+
+- `src/data/manifests.py`: read split IDs, build manifest records, save/load
+  manifest JSON.
+- `src/data/validation.py`: validate paths, file sizes, extensions, duplicate
+  complex IDs, and split names.
+- `src/data/loaders.py`: load validated `ComplexInput` records from a manifest
+  and filter records by split.
 
 ## Development Notes
 
@@ -200,6 +258,11 @@ The canonical DiffDock manifest fields are represented by `ComplexInput` in
 - Save every run under `artifacts/runs/` with a config snapshot.
 - Prefer adding small, testable pieces before connecting real model backends.
 - Do not commit generated artifacts, checkpoints, or raw datasets.
+- The default DiffDock baseline config currently targets the synthetic `mini`
+  split. Update `dataset.split` and `dataset.manifest_path` when moving to a
+  real train/val/test PDBBind manifest.
+- `--exist-ok` allows rerunning the same dated run directory. Omit it when you
+  want the runner to fail instead of overwriting files in an existing run.
 
 ## License
 

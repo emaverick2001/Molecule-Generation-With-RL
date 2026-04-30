@@ -48,7 +48,6 @@ example_input = {
 ##### **0. Setup** 
 ###### **Key Components / Deliverables**
 1. local code environment setup 
-	- Follow [[Software Implementation Guide]]
 2. Setup Project Repository Structure
 	1. Create top-level directories:
 		- assets/
@@ -56,6 +55,15 @@ example_input = {
 			- figures/
 		- artifacts/
 			- runs/
+				- use this naming convention: {date}_{model}_{experiment}_{reward}_{seed}
+				- each folder should contain: 
+					- config.yaml  
+					- metrics.json  
+					- rewards.csv  
+					- generated_samples_manifest.json  
+					- training_log.csv  
+					- errors.log  
+					- summary.md
 			- checkpoints/
 				- diffdock/
 				- pepflow/
@@ -147,39 +155,220 @@ example_input = {
 			- run_diffdock_posttraining.sh  
 			- evaluate_diffdock.sh  
 			- run_all.sh
+	2. Follow [[Software Implementation Guide]] until 2. Working on the Frontend or 3. Working on the Backend
 ##### **1. Dataset Loading + Processing
-###### Datastructures
-1. [Datastructure name]
-	- [Datastructure description / purpose]
-	```python
-    # Datastructure example with fields and types
-	```
 ###### **Key Components / Deliverables**
-1. Add Error Handling & Fault Tolerance
-	- Skip invalid molecule generations
-	- Catch:
-	    - invalid geometry
-	    - failed reward computation
-	- Log failed samples separately
-2. Data Validation  
-	- verify repo integrity  
-	- ensure tests reproduce failure  
-	- validate task schema
-3. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-4. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
+0. Write a manifest builder
+	- Create a reusable utility that scans a small PDBBind-style dataset folder and produces a standardized JSON manifest. The manifest becomes the single source of truth for downstream pipeline stages such as baseline generation, reward filtering, evaluation, and post-training.
+	- Without a manifest, every stage would need to manually understand this folder structure:
+		```
+		data/raw/pdbbind/
+		├── 1abc/│   
+		├── protein.pdb│   
+		├── ligand.sdf│   
+		└── ligand_gt.sdf
+		```
+	1. Create src/data/manifests.py
+		- This file should contain functions for: reading complex IDs, building manifest records, validating required files, saving manifest JSON, loading manifest JSON
+		- Example output
+			```
+			[  
+			{  
+			"complex_id": "1abc",  
+			"protein_path": "data/raw/pdbbind/1abc/protein.pdb",  
+			"ligand_path": "data/raw/pdbbind/1abc/ligand.sdf",  
+			"ground_truth_pose_path": "data/raw/pdbbind/1abc/ligand_gt.sdf",  
+			"split": "mini"  
+			}  
+			]
+			```
+		1. read_complex_ids(path)
+			- Read a `.txt` file containing one complex ID per line.
+			1. Accept a path to a text file.
+			2. Return a list of non-empty stripped IDs.
+			3. Ignore blank lines.
+			4. Raise `FileNotFoundError` if the file does not exist.
+		2. build_manifest_records(complex_ids, raw_root, split)
+			- Convert a list of complex IDs into standardized manifest records.
+			1. For each `complex_id`, assume files are stored at
+				```
+				{raw_root}/{complex_id}/protein.pdb  
+				{raw_root}/{complex_id}/ligand.sdf  
+				{raw_root}/{complex_id}/ligand_gt.sdf
+				```
+			- Create a `ComplexInput` object for each complex.
+		3. validate_manifest_records(records)
+			- Ensure every manifest record points to actual files.
+			1. For every record
+				- Check that `protein_path` exists.
+				- Check that `ligand_path` exists.
+				- Check that `ground_truth_pose_path` exists.
+				- Raise `FileNotFoundError` with a clear message if any required file is missing.
+		4. save_manifest(records, path)
+			- Save manifest records as JSON.
+				1. Convert each `ComplexInput` dataclass to a dictionary.
+				2. Save as indented JSON.
+				3. Create parent directories if needed.
+		5. load_manifest(path)
+			- Load a manifest JSON file and convert it back into `ComplexInput` objects.
+			1. Read the JSON file.
+			2. Convert each dictionary into a `ComplexInput`.
+			3. Return list of `ComplexInput`.
+			4. Raise `FileNotFoundError` if manifest file does not exist.
+		6. build_and_save_manifest(...)
+			- One convenience function that handles the full flow
+			1. Read IDs from `ids_path`.
+			2. Build manifest records using `raw_root` and `split`.
+			3. Validate that all required files exist.
+			4. Save manifest to `output_path`.
+			5. Return the records.
+	2. Create ```tests/test_manifests.py```
+		- Verifies:
+			- read_complex_ids reads non-empty IDs  
+			- build_manifest_records creates correct paths  
+			- validate_manifest_records passes when files exist  
+			- validate_manifest_records fails when files are missing  
+			- save_manifest writes JSON  
+			- load_manifest reads JSON into ComplexInput objects  
+			- build_and_save_manifest runs the full workflow
+1. Implement Path and File Validation 
+	- Create a validation layer that checks whether a dataset manifest is safe to use before running baseline generation, reward filtering, evaluation, or post-training.
+	- Catches 
+		- missing files  
+		- empty files  
+		- wrong file extensions  
+		- duplicate complex IDs  
+		- invalid split names
+	1. Create src/data/validation.py which should check:
+		- `protein_path` exists
+		- `ligand_path` exists
+		- `ground_truth_pose_path` exists
+		- files are not empty
+		- file extensions are expected
+		- `complex_id` is unique
+		- split is valid
+		1. validate_file_exists(path, field_name) 
+		2. validate_file_not_empty(path, field_name)
+		3. `find_duplicate_complex_ids(records)`
+		4. validate_record(record, duplicate_ids, valid_splits)
+		5. validate_manifest_records(records)
+		6. validate_manifest_file(path)
+		- Example output
+			```
+			validation_result = {  
+			"num_complexes": 10,  
+			"num_valid": 9,  
+			"num_invalid": 1,  
+			"invalid_complexes": [  
+			{  
+			"complex_id": "3bad",  
+			"reason": "missing ligand_gt.sdf"  
+			}  
+			]  
+			}
+			```
+	2. Create ```tests/test_validation.py```
+2. Write the dataset loader 
+	- Create a loader that reads a manifest JSON file and returns validated `ComplexInput` objects
+	- The loader should **not** do molecular preprocessing, DiffDock conversion, reward computation, RMSD computation, or featurization.
+	1. Create src/data/loaders.py
+		- The loader should read a manifest and return `ComplexInput` objects.
+		1. load_complex_manifest(manifest_path, validate=True)
+			- Check that `manifest_path` exists.
+			- Load JSON.
+			- Verify the JSON root is a list.
+			- Convert each item into a `ComplexInput`.
+			- If `validate=True`, call `validate_manifest_records(records)`.
+			- If invalid records exist, raise `ValueError` with a clear message.
+			- Return `list[ComplexInput]`.
+		2. `filter_records_by_split(records, split)`
+			- Return only records matching the requested split.
+		3. load_split_ids(path)
+			1. 
+	2. Add Dataset Loading Tests in tests/test_data_loading.py
+		- manifest file exists  
+		- manifest loads successfully  
+		- each item has required fields  
+		- all paths exist  
+		- complex IDs are unique  
+		- invalid manifest raises clear error
+	3. Add Preprocessing only if necessary
+		1. Start with lightweight preprocessing
+			1. normalize file names  
+			2. verify extensions  
+			3. optionally copy/symlink files into a standardized location
+		2. Avoid 
+			1. coordinate transformations  
+			2. molecular featurization  
+			3. DiffDock tensor conversion  
+			4. reward computation  
+			5. RMSD computation
+	4. Decide split structure
+		1. Create data/processed/diffdock/splits/
+			- mini.txt
+			- train.txt
+			- val.txt
+			- test.txt
+		2. Manifest Builder assigns splits based on these files
+	5. Connect dataset loading to the dry-run pipeline
+		1. Update src/pipeline/run_baseline.py
+			- So instead of fake hardcoded inputs, it loads the real `mini_manifest.json`.
+			- Your pipeline still should **not** call DiffDock yet.
+			- it should
+				1. create run folder  
+				2. load mini manifest  
+				3. validate complexes  
+				4. save loaded manifest copy into run folder  
+				5. save dataset summary
+				```
+				artifacts/runs/{run_id}/  
+				├── config.yaml  
+				├── input_manifest.json  
+				├── dataset_summary.json  
+				├── validation_report.json  
+				└── summary.md
+				```
+3. Create a tiny real MVP dataset first and run it through the experiment pipeline
+	- Create a small real PDBBind-style dataset with **5 to 10 protein-ligand complexes** and run it through the current MVP pipeline.
+	- After this step, one command should be able to produce an experiment folder within
+		```
+		artifacts/runs/{run_id}/  
+		├── config.yaml  
+		├── config_snapshot.json  
+		├── errors.log  
+		├── generated_samples_manifest.json  
+		├── rewards.csv  
+		├── metrics.json  
+		└── summary.md
+		```
+	1. Create Mini Split File
+	2. Create Tiny Dataset Builder Script
 ##### **2. Baseline Generation**
+###### **Key Components / Deliverables**
+8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
+9. [key component name]
+	1. [steps to implement key component/ tests to run for validation]
 ##### **3. Reward Scoring**
+###### **Key Components / Deliverables**
+8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
+9. [key component name]
+	1. [steps to implement key component/ tests to run for validation]
 ##### **4. Evaluation**
+###### **Key Components / Deliverables**
+8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
+9. [key component name]
+	1. [steps to implement key component/ tests to run for validation]
 ##### **5. Post-Training**
+###### **Key Components / Deliverables**
+8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
+9. [key component name]
+	1. [steps to implement key component/ tests to run for validation]
 ##### **6. Post-Trained Generation**
+###### **Key Components / Deliverables**
+8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
+9. [key component name]
+	1. [steps to implement key component/ tests to run for validation]
 ##### **7. Comparison + Reporting**
-###### Datastructures
-1. [Datastructure name]
-	- [Datastructure description / purpose]
-	```python
-    # Datastructure example with fields and types
-	```
 ###### **Key Components / Deliverables**
 1. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
 2. [key component name]
@@ -201,45 +390,3 @@ example_input = {
 - diversity preservation
 - failure cases
 - reward hacking detection
-#### **Artifact Schema / Serialization Contract**
-- Define how artifacts are structured and stored
-- **Output of this section should be:**
-	- A **reproducible artifact specification**
----
-##### **Serialization Format**
-- JSON / binary / database schema
-- Key naming conventions
-- Versioning format
----
-- 
-##### **Versioning Strategy**
-- How are artifacts versioned?
-- Examples:
-	- dataset version
-	- model checkpoint version
-	- experiment ID
----
-- 
-#### **Threats to Validity (How could this be wrong?)**
-- What could invalidate your conclusions?
-- Types:
-	- dataset bias
-	- metric limitations
-	- experimental setup bias
-	- implementation artifacts
-- **Output of this section should be:**
-	- A **critical reflection on limitations of evaluation**
----
-#### **Optimizations**
-##### Orchestration / Pipeline Management
-##### **Complexity / Scaling Behavior (Optional but Strong)**
-- How does the method scale?
-- Examples:
-	- time complexity
-	- memory usage
-	- behavior with larger inputs
----
-- 
-##### Caching  
-- 
-##### Security / Isolation (Optional but Strong)

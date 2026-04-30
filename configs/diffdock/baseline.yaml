@@ -1,8 +1,8 @@
 # DiffDock baseline experiment config.
 # Purpose:
-# - Run pretrained DiffDock on the test split
-# - Generate candidate docking poses
-# - Evaluate pose quality with RMSD metrics
+# - Run the MVP DiffDock dry run on the mini split
+# - Simulate generated candidate docking poses
+# - Save validation, reward, and metric artifacts
 # - Save run artifacts for later comparison against post-trained models
 
 experiment:
@@ -18,10 +18,10 @@ experiment:
 dataset:
   # Dataset source for this experiment.
   name: pdbbind
-  # Which split to evaluate.
-  split: test
+  # Which split to evaluate in the MVP dry run.
+  split: mini
   # Prebuilt manifest listing complexes and file paths for this split.
-  manifest_path: data/processed/diffdock/manifests/test_manifest.json
+  manifest_path: data/processed/diffdock/manifests/mini_manifest.json
 
 model:
   # Pretrained checkpoint used for baseline inference.
