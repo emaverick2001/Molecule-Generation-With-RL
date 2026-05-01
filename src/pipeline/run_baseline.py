@@ -86,6 +86,8 @@ def run_baseline_dry_run(
 
     num_samples = config["generation"]["num_samples"]
     rmsd_threshold = config["evaluation"]["rmsd_threshold"]
+    eval_cfg = config.get("evaluation", {})
+    rmsd_threshold = eval_cfg.get("rmsd_threshold", 2.0)
     generated_samples = generate_baseline_poses(
         config=config,
         complexes=complexes,

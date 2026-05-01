@@ -11,6 +11,9 @@ dataset:
   split: smoke
   manifest_path: data/processed/diffdock/manifests/smoke_manifest.json
 
+evaluation:
+  rmsd_threshold: 2.0
+
 generation:
   backend: diffdock
   num_samples: 1
