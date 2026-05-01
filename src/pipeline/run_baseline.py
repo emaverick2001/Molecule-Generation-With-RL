@@ -9,6 +9,7 @@ from pathlib import Path
 from src.data.loaders import load_complex_manifest
 from src.data.validation import EXPECTED_EXTENSIONS, validate_manifest_records
 from src.generation.dry_run_generator import generate_dry_run_poses
+from src.generation.generate_diffdock import generate_diffdock_poses
 from src.utils.artifact_logger import save_csv, save_json, save_records_json, save_text
 from src.utils.config import load_experiment_config
 from src.utils.run_logger import get_artifact_paths, initialize_run
@@ -32,10 +33,44 @@ def build_dataset_summary(records: list[ComplexInput], config: dict) -> dict:
     }
 
 
+def generate_baseline_poses(
+    config: dict,
+    complexes: list[ComplexInput],
+    run_dir: str | Path,
+) -> list[GeneratedPose]:
+    generation_config = config["generation"]
+    backend = generation_config.get("backend", "dry_run")
+    num_samples = generation_config["num_samples"]
+    run_dir = Path(run_dir)
+
+    if backend == "dry_run":
+        return generate_dry_run_poses(
+            records=complexes,
+            output_dir=run_dir / "generated_samples",
+            num_samples=num_samples,
+        )
+
+    if backend == "diffdock":
+        diffdock_config = config["diffdock"]
+        return generate_diffdock_poses(
+            records=complexes,
+            output_dir=run_dir / "generated_samples",
+            num_samples=num_samples,
+            command_template=diffdock_config["command_template"],
+            raw_output_dir=run_dir / "raw_diffdock_outputs",
+            repo_dir=diffdock_config["repo_dir"],
+            config_path=diffdock_config["config_path"],
+            log_dir=run_dir / "logs",
+            timeout_seconds=diffdock_config.get("timeout_seconds"),
+        )
+
+    raise ValueError(f"Unsupported generation backend: {backend}")
+
+
 def run_baseline_dry_run(
     config: dict,
     complexes: list[ComplexInput],
-    generated_output_dir: str | Path,
+    run_dir: str | Path,
 ) -> tuple[list[GeneratedPose], list[RewardRecord], dict]:
     """
     MVP placeholder for DiffDock baseline.
@@ -51,10 +86,10 @@ def run_baseline_dry_run(
 
     num_samples = config["generation"]["num_samples"]
     rmsd_threshold = config["evaluation"]["rmsd_threshold"]
-    generated_samples = generate_dry_run_poses(
-        records=complexes,
-        output_dir=generated_output_dir,
-        num_samples=num_samples,
+    generated_samples = generate_baseline_poses(
+        config=config,
+        complexes=complexes,
+        run_dir=run_dir,
     )
     reward_records = []
     metric_records = []
@@ -102,6 +137,7 @@ def run_baseline_dry_run(
     metrics = {
         "experiment_name": config["experiment"]["name"],
         "mode": config["experiment"]["mode"],
+        "generation_backend": config["generation"].get("backend", "dry_run"),
         "dataset_manifest": config["dataset"]["manifest_path"],
         "num_complexes": len(metric_records),
         "num_generated_samples": len(generated_samples),
@@ -158,7 +194,7 @@ def main() -> None:
     generated_samples, reward_records, metrics = run_baseline_dry_run(
         config=config,
         complexes=complexes,
-        generated_output_dir=run_dir / "generated_samples",
+        run_dir=run_dir,
     )
 
     save_records_json(
@@ -197,6 +233,7 @@ def main() -> None:
             f"- Dataset: {dataset_summary['dataset_name']}\n"
             f"- Split: {dataset_summary['stage']}\n"
             f"- Complexes: {dataset_summary['num_complexes']}\n"
+            f"- Generation backend: {metrics['generation_backend']}\n"
             f"- Generated samples: {metrics['num_generated_samples']}\n"
         ),
         artifact_paths["summary"],

@@ -405,15 +405,174 @@ example_input = {
 				- Standardize output pose files into predictable names.
 				- Return a list of `GeneratedPose` records.
 				- Validate the output contract using `validate_generated_pose_records`.
-6. Run Baseline Generation on Tiny Dataset 
-7. Define Acceptance Criteria for This Phase
-	- Baseline Generation is complete when:  
+6. Implement Actual DiffDock Inference 
+	- Implementation status: the pipeline now supports a real `diffdock` generation backend while preserving the dry-run backend for local plumbing tests.
+	- Code entry points:
+		- `src/generation/generate_diffdock.py`
+		- `src/pipeline/run_baseline.py`
+		- `configs/diffdock/smoke.yaml`
+		- `configs/diffdock/tiny.yaml`
+		- `scripts/run_diffdock_smoke.sh`
+		- `scripts/run_diffdock_tiny.sh`
+	1. Add a DiffDock backend config
+		```
+		generation:
+		  backend: diffdock
+		  num_samples: 2
+		  use_confidence_reranking: false
+		
+		diffdock:
+		  repo_dir: external/DiffDock
+		  config_path: external/DiffDock/default_inference_args.yaml
+		  timeout_seconds: 900
+		  command_template:
+		    - python
+		    - -m
+		    - inference
+		    - --config
+		    - "{config_path}"
+		    - --protein_path
+		    - "{protein_path}"
+		    - --ligand_description
+		    - "{ligand_path}"
+		    - --out_dir
+		    - "{raw_output_dir}"
+		    - --samples_per_complex
+		    - "{num_samples}"
+		    - --batch_size
+		    - "1"
+		```
+		- Important correction: newer DiffDock `inference.py` uses `--ligand_description`, not just `--ligand`, based on the current parser.
+	2. Add a preflight check before running DiffDock 
+		1. Implemented as `preflight_diffdock_generation(...)` in `src/generation/generate_diffdock.py`.
+			- Check 
+				1. external/DiffDock exists  
+				2. default_inference_args.yaml exists  
+				3. manifest paths exist  
+				4. protein files are .pdb  
+					5. ligand files are .sdf  
+				6. python command can run  
+				7. generation.num_samples > 0
+	3. Make the subprocess run inside the DiffDock repo
+		- This matters because DiffDock imports its own local modules like `utils`, `datasets`, and its config paths are often repo-relative.
+		```
+		subprocess.run(  
+		command,  
+		cwd=repo_dir,  
+		capture_output=True,  
+		text=True,  
+		timeout=timeout_seconds,  
+		)
+		```
+		1. Update your command formatter so absolute paths are passed into DiffDock:
+			- protein_path  
+			- ligand_path  
+			- raw_output_dir  
+			- config_path
+	4. Update command formatting to support DiffDock placeholders
+		```
+		{complex_id}
+		{protein_path}
+		{ligand_path}
+		{ground_truth_pose_path}
+		{raw_output_dir}
+		{num_samples}
+		{config_path}
+		{repo_dir}
+		```
+		- `generate_diffdock_poses(...)` passes absolute paths into DiffDock for protein, ligand, ground-truth ligand, config, repo, and raw output paths.
+	5. Implement `run_diffdock_command(..., cwd=repo_dir)`
+		- run command  
+		- write stdout log  
+		- write stderr log  
+		- raise RuntimeError if return code != 0  
+		- raise TimeoutError if timeout occurs
+		- Each complex should get logs like:
+			- `artifacts/runs/{run_id}/logs/1abc.stdout.log`
+			- `artifacts/runs/{run_id}/logs/1abc.stderr.log`
+	6. Discover DiffDock-generated SDF outputs
+		- After each DiffDock run, the wrapper searches:
+			- artifacts/runs/{run_id}/raw_diffdock_outputs/{complex_id}/
+		- for:
+			- *.sdf
+		- Use recursive search:
+			- sdf_paths = sorted(raw_output_dir.rglob("*.sdf"))
+		- Then copy the first num_samples into your standardized folder:
+			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_0.sdf
+			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_1.sdf
+	7. Preserve your existing output contract
+		- Even with real DiffDock, the pipeline output should still be:
+			- generated_samples/
+			- generated_samples_manifest.json
+			- summary.md
+			- logs/
+			- raw_diffdock_outputs/
+		- And `generated_samples_manifest.json` should still contain:
+			```
+			[
+			  {
+				"complex_id": "1abc",
+				"sample_id": 0,
+				"pose_path": "artifacts/runs/.../generated_samples/1abc_sample_0.sdf",
+				"confidence_score": null
+			  }
+			]
+			```
+	8. Add the backend switch in `run_baseline.py`
+		- Implemented via `generation.backend`.
+		- Supported values:
+			- `dry_run`
+			- `diffdock`
+		- The dataset loader, artifact writers, reward placeholder, and metrics placeholder do not need to know which generation backend produced the poses.
+	9. Start with one complex before running all 5–10
+		1. Create a debug split data/processed/diffdock/splits/smoke.txt with one complex ID
+		2. Create data/processed/diffdock/manifests/smoke_manifest.json
+		3. Point a temporary config to that manifest:
+			```
+			dataset:
+			  name: pdbbind_tiny
+			  split: smoke
+			  manifest_path: data/processed/diffdock/manifests/smoke_manifest.json
+			
+			generation:
+			  backend: diffdock
+			  num_samples: 1
+			```
+	10. Add a script for real DiffDock baseline `scripts/run_diffdock_smoke.sh`
+		- Creates the tiny local dataset.
+		- Builds a one-complex smoke manifest.
+		- Runs `src.pipeline.run_baseline` with `configs/diffdock/smoke.yaml`.
+		- Requires `external/DiffDock` and `external/DiffDock/default_inference_args.yaml`.
+	11. Add a script to test more complexes (5-10 complex mini manifest) `scripts/run_diffdock_tiny.sh`
+		- Creates the tiny local dataset.
+		- Runs `src.pipeline.run_baseline` with `configs/diffdock/tiny.yaml`.
+		- Requires `external/DiffDock` and `external/DiffDock/default_inference_args.yaml`.
+	12. Completion Criteria 
 		1. `run_baseline.py` loads the mini manifest  
 		2. it creates generated sample records for every complex  
 		3. it saves `generated_samples_manifest.json`  
 		4. generated sample paths are run-specific  
 		5. tests pass  
 		6. the pipeline can be switched from dry-run generation to DiffDock generation without changing the dataset loader
+		7. able to run ./scripts/run_diffdock_smoke.sh
+		8. run folder contains 
+			```
+			config.yaml
+			config_snapshot.json
+			errors.log
+			input_manifest.json
+			dataset_summary.json
+			validation_report.json
+			raw_diffdock_outputs/
+			logs/
+			generated_samples/
+			generated_samples_manifest.json
+			summary.md
+			```
+		9. Next steps:
+			- Install or clone DiffDock into `external/DiffDock`.
+			- Verify the command template against the exact DiffDock version in that checkout.
+			- Replace simulated RMSD/reward values with real RMSD evaluation in the Reward Scoring phase.
 ##### **3. Reward Scoring**
 ###### **Key Components / Deliverables**
 8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]

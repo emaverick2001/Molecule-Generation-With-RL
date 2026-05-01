@@ -5,7 +5,10 @@ import pytest
 
 from src.generation.contract import validate_generated_pose_records
 from src.generation.dry_run_generator import generate_dry_run_poses
-from src.generation.generate_diffdock import generate_diffdock_poses
+from src.generation.generate_diffdock import (
+    generate_diffdock_poses,
+    preflight_diffdock_generation,
+)
 from src.utils.artifact_logger import save_records_json
 from src.utils.schemas import ComplexInput, GeneratedPose
 
@@ -120,8 +123,8 @@ def test_generate_diffdock_poses_runs_command_and_standardizes_outputs(tmp_path)
     records = _records()
     calls = []
 
-    def fake_runner(command, check):
-        calls.append((command, check))
+    def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
+        calls.append((command, cwd, stdout_path, stderr_path, timeout_seconds))
         output_dir = Path(command[command.index("--out") + 1])
         output_dir.mkdir(parents=True, exist_ok=True)
         for sample_id in range(2):
@@ -141,15 +144,16 @@ def test_generate_diffdock_poses_runs_command_and_standardizes_outputs(tmp_path)
             "--ligand",
             "{ligand_path}",
             "--out",
-            "{output_dir}",
+            "{raw_output_dir}",
             "--samples",
             "{num_samples}",
         ],
+        repo_dir=tmp_path,
         runner=fake_runner,
     )
 
     assert len(calls) == len(records)
-    assert all(check is True for _, check in calls)
+    assert all(cwd == tmp_path.resolve() for _, cwd, _, _, _ in calls)
     assert [pose.pose_path for pose in generated] == [
         str(tmp_path / "generated_samples" / "1abc_sample_0.sdf"),
         str(tmp_path / "generated_samples" / "1abc_sample_1.sdf"),
@@ -160,7 +164,7 @@ def test_generate_diffdock_poses_runs_command_and_standardizes_outputs(tmp_path)
 
 
 def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
-    def fake_runner(command, check):
+    def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
         output_dir = Path(command[command.index("--out") + 1])
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "only_pose.sdf").write_text("pose\n", encoding="utf-8")
@@ -171,5 +175,40 @@ def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
             output_dir=tmp_path / "generated_samples",
             num_samples=2,
             command_template=["diffdock", "--out", "{output_dir}"],
+            repo_dir=tmp_path,
             runner=fake_runner,
+        )
+
+
+def test_generate_diffdock_poses_discovers_recursive_sdf_outputs(tmp_path):
+    def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
+        output_dir = Path(command[command.index("--out") + 1])
+        nested_output_dir = output_dir / "complex_outputs"
+        nested_output_dir.mkdir(parents=True, exist_ok=True)
+        (nested_output_dir / "rank1.sdf").write_text("pose\n", encoding="utf-8")
+
+    generated = generate_diffdock_poses(
+        records=[_records()[0]],
+        output_dir=tmp_path / "generated_samples",
+        num_samples=1,
+        command_template=["diffdock", "--out", "{raw_output_dir}"],
+        repo_dir=tmp_path,
+        runner=fake_runner,
+    )
+
+    assert len(generated) == 1
+    assert Path(generated[0].pose_path).is_file()
+
+
+def test_preflight_diffdock_generation_requires_repo_dir(tmp_path):
+    config_path = tmp_path / "default_inference_args.yaml"
+    config_path.write_text("inference\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="repo_dir"):
+        preflight_diffdock_generation(
+            records=_records(),
+            repo_dir=tmp_path / "missing_diffdock",
+            config_path=config_path,
+            num_samples=1,
+            command_template=["python", "-m", "inference"],
         )

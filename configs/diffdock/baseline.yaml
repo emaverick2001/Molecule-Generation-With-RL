@@ -28,10 +28,34 @@ model:
   checkpoint_path: artifacts/checkpoints/diffdock/pretrained.pt
 
 generation:
+  # backend can be "dry_run" for local plumbing tests or "diffdock" for real inference.
+  backend: dry_run
   # Number of candidate poses generated per complex.
   num_samples: 40
   # If true, rank/generated poses using DiffDock confidence head before evaluation.
   use_confidence_reranking: false
+
+diffdock:
+  # Local DiffDock checkout used when generation.backend=diffdock.
+  repo_dir: external/DiffDock
+  config_path: external/DiffDock/default_inference_args.yaml
+  timeout_seconds: 900
+  command_template:
+    - python
+    - -m
+    - inference
+    - --config
+    - "{config_path}"
+    - --protein_path
+    - "{protein_path}"
+    - --ligand_description
+    - "{ligand_path}"
+    - --out_dir
+    - "{raw_output_dir}"
+    - --samples_per_complex
+    - "{num_samples}"
+    - --batch_size
+    - "1"
 
 evaluation:
   # Pose is considered successful if RMSD <= threshold (Å).

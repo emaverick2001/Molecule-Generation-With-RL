@@ -2,6 +2,9 @@
 artifacts/
 data/
 
+# Local third-party model checkouts. Install with scripts/setup_diffdock.sh.
+external/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

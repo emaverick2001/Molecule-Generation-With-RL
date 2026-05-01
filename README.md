@@ -89,6 +89,9 @@ scripts/
 Generated outputs are written under `artifacts/`, which is intentionally ignored
 by git. Local data under `data/` is also ignored by git.
 
+Third-party model checkouts should live under `external/`, which is also ignored
+by git. See `docs/diffdock_setup.md` for DiffDock setup and GPU notes.
+
 ## Setup
 
 Requirements:
@@ -174,6 +177,18 @@ The baseline runner does not invoke DiffDock yet. It loads the mini manifest,
 validates the records, then simulates generated poses, reward records, and
 aggregate metrics to validate the experiment artifact flow.
 
+To run real DiffDock inference, first install the external DiffDock checkout:
+
+```bash
+./scripts/setup_diffdock.sh
+```
+
+Then run the one-complex smoke test:
+
+```bash
+./scripts/run_diffdock_smoke.sh
+```
+
 Use `--config` to run another DiffDock config through the same entry point once
 the corresponding pipeline behavior is implemented:
 
@@ -224,11 +239,12 @@ data/raw/pepflow/
 data/processed/pepflow/manifests/
 artifacts/checkpoints/diffdock/
 artifacts/checkpoints/pepflow/
+external/DiffDock/
 ```
 
 The mini experiment creates synthetic files in `data/raw/pdbbind/` and
 `data/processed/diffdock/`. These paths are ignored by git, along with
-`artifacts/`.
+`artifacts/` and `external/`.
 
 The canonical DiffDock manifest fields are represented by `ComplexInput` in
 `src/utils/schemas.py`:

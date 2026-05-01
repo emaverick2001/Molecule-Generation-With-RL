@@ -1,0 +1,38 @@
+# One-complex real DiffDock inference smoke test.
+
+experiment:
+  name: diffdock_smoke
+  model: diffdock
+  mode: baseline
+  seed: 42
+
+dataset:
+  name: pdbbind
+  split: smoke
+  manifest_path: data/processed/diffdock/manifests/smoke_manifest.json
+
+generation:
+  backend: diffdock
+  num_samples: 1
+  use_confidence_reranking: false
+
+diffdock:
+  repo_dir: external/DiffDock
+  config_path: external/DiffDock/default_inference_args.yaml
+  timeout_seconds: 900
+  command_template:
+    - python
+    - -m
+    - inference
+    - --config
+    - "{config_path}"
+    - --protein_path
+    - "{protein_path}"
+    - --ligand_description
+    - "{ligand_path}"
+    - --out_dir
+    - "{raw_output_dir}"
+    - --samples_per_complex
+    - "{num_samples}"
+    - --batch_size
+    - "1"
