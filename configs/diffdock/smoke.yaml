@@ -21,7 +21,7 @@ diffdock:
   config_path: external/DiffDock/default_inference_args.yaml
   timeout_seconds: 900
   command_template:
-    - python
+    - "{python_executable}"
     - -m
     - inference
     - --config

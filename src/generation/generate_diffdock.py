@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,10 @@ Runner = Callable[..., Any]
 
 def _resolve_path(path: str | Path) -> str:
     return str(Path(path).expanduser().resolve())
+
+
+def _get_python_executable() -> str:
+    return os.environ.get("DIFFDOCK_PYTHON", "python")
 
 
 def _as_text(value: str | bytes | None) -> str:
@@ -55,6 +60,7 @@ def _format_command(
         "num_samples": str(num_samples),
         "config_path": _resolve_path(config_path) if config_path is not None else "",
         "repo_dir": _resolve_path(repo_dir) if repo_dir is not None else "",
+        "python_executable": _get_python_executable(),
     }
 
     return [part.format(**values) for part in command_template]
@@ -76,7 +82,9 @@ def preflight_diffdock_generation(
     if not command_template:
         raise ValueError("command_template must not be empty")
 
-    executable = str(command_template[0])
+    executable = str(
+        command_template[0].format(python_executable=_get_python_executable())
+    )
     executable_path = Path(executable)
     if executable_path.parent != Path("."):
         command_exists = executable_path.exists()

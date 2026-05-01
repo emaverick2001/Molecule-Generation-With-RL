@@ -71,6 +71,14 @@ def test_validate_record_returns_no_errors_for_valid_record(tmp_path):
     assert validate_record(record, duplicate_ids=set()) == []
 
 
+def test_validate_record_accepts_smoke_split(tmp_path):
+    raw_root = tmp_path / "pdbbind"
+    _create_complex(raw_root, "1abc")
+    record = build_manifest_records(["1abc"], raw_root, split="smoke")[0]
+
+    assert validate_record(record, duplicate_ids=set()) == []
+
+
 def test_validate_record_catches_empty_file_wrong_extension_duplicate_and_split(tmp_path):
     raw_root = tmp_path / "pdbbind"
     _create_complex(raw_root, "1abc", ligand_filename="ligand.mol2")

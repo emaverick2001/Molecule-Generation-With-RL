@@ -36,13 +36,29 @@ conda activate diffdock
 Run a one-complex smoke test from the project root:
 
 ```bash
+conda activate diffdock
 ./scripts/run_diffdock_smoke.sh
 ```
 
 Run the tiny multi-complex test:
 
 ```bash
+conda activate diffdock
 ./scripts/run_diffdock_tiny.sh
+```
+
+The scripts use `uv run` for this project's lightweight pipeline code and
+`DIFFDOCK_PYTHON` for the actual DiffDock subprocess. If a conda environment is
+active, the scripts set:
+
+```bash
+DIFFDOCK_PYTHON="$CONDA_PREFIX/bin/python"
+```
+
+You can override it manually:
+
+```bash
+DIFFDOCK_PYTHON=/path/to/diffdock/python ./scripts/run_diffdock_smoke.sh
 ```
 
 ## ICRN / GPU Notes
