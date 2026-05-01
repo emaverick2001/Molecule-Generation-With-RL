@@ -37,7 +37,7 @@ Run a one-complex smoke test from the project root:
 
 ```bash
 conda activate diffdock
-./scripts/run_diffdock_smoke.sh
+SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
 Run the tiny multi-complex test:
@@ -95,3 +95,8 @@ diffdock:
 ```
 
 Use `num_samples: 1` until the smoke test is stable, then scale up.
+
+Do not use the synthetic MVP dataset for real DiffDock inference. It exists to
+test this repository's artifact plumbing. Real DiffDock smoke tests should point
+to an actual PDBBind-style complex with `protein.pdb`, `ligand.sdf`, and
+`ligand_gt.sdf`.

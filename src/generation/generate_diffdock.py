@@ -42,6 +42,13 @@ def _as_text(value: str | bytes | None) -> str:
     return value
 
 
+def _tail_text(text: str, max_lines: int = 40) -> str:
+    lines = text.strip().splitlines()
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
 def _format_command(
     command_template: Sequence[str],
     record: ComplexInput,
@@ -166,9 +173,23 @@ def run_diffdock_command(
     stderr_path.write_text(result.stderr, encoding="utf-8")
 
     if result.returncode != 0:
-        raise RuntimeError(
+        stderr_tail = _tail_text(result.stderr)
+        stdout_tail = _tail_text(result.stdout)
+        details = [
             f"DiffDock command failed with return code {result.returncode}: "
-            f"{' '.join(command)}"
+            f"{' '.join(command)}",
+            f"cwd: {Path(cwd)}",
+            f"stdout log: {stdout_path}",
+            f"stderr log: {stderr_path}",
+        ]
+
+        if stderr_tail:
+            details.append(f"stderr tail:\n{stderr_tail}")
+        elif stdout_tail:
+            details.append(f"stdout tail:\n{stdout_tail}")
+
+        raise RuntimeError(
+            "\n".join(details)
         )
 
     return result

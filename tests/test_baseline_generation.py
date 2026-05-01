@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from src.generation.dry_run_generator import generate_dry_run_poses
 from src.generation.generate_diffdock import (
     generate_diffdock_poses,
     preflight_diffdock_generation,
+    run_diffdock_command,
 )
 from src.utils.artifact_logger import save_records_json
 from src.utils.schemas import ComplexInput, GeneratedPose
@@ -212,3 +214,28 @@ def test_preflight_diffdock_generation_requires_repo_dir(tmp_path):
             num_samples=1,
             command_template=["python", "-m", "inference"],
         )
+
+
+def test_run_diffdock_command_failure_reports_log_paths_and_stderr_tail(tmp_path):
+    stdout_path = tmp_path / "logs" / "failed.stdout.log"
+    stderr_path = tmp_path / "logs" / "failed.stderr.log"
+
+    with pytest.raises(RuntimeError) as error:
+        run_diffdock_command(
+            command=[
+                sys.executable,
+                "-c",
+                "import sys; print('diffdock failed', file=sys.stderr); sys.exit(1)",
+            ],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+        )
+
+    message = str(error.value)
+
+    assert "stdout log:" in message
+    assert "stderr log:" in message
+    assert "diffdock failed" in message
+    assert stderr_path.read_text(encoding="utf-8").strip() == "diffdock failed"

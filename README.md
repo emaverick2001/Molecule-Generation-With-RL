@@ -186,7 +186,7 @@ To run real DiffDock inference, first install the external DiffDock checkout:
 Then run the one-complex smoke test:
 
 ```bash
-./scripts/run_diffdock_smoke.sh
+SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
 Use `--config` to run another DiffDock config through the same entry point once
