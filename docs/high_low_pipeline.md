@@ -345,9 +345,75 @@ example_input = {
 	2. Create Tiny Dataset Builder Script
 ##### **2. Baseline Generation**
 ###### **Key Components / Deliverables**
-8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-9. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
+0. Define the Baseline Generation Contract
+	- Decide what baseline generation must produce for each complex.
+1. **Create the Generation Interface**
+	1. Create src/generation/dry_run_generator.py
+		- generate fake pose records from real manifest-loaded complexes
+		- later replace or extend it with `diffdock_generator.py`
+	2. Implement MVP Dry-Run Generation 
+		- For each `ComplexInput`:  
+			1. Read `complex_id`  
+			2. Loop over `num_samples`  
+			3. Create output pose paths  
+			4. Create `GeneratedPose` objects  
+			5. Save them into `generated_samples_manifest.json`  
+		- Do not run DiffDock yet.  
+		- This validates the generation artifact shape before adding model complexity.
+2. Define Generated Sample Artifact Layout
+	- Use one run-local generated sample directory:
+		```
+		artifacts/runs/{run_id}/generated_samples/
+		├── 1abc_sample_0.sdf
+		├── 1abc_sample_1.sdf
+		├── 2xyz_sample_0.sdf
+		└── 2xyz_sample_1.sdf
+		```
+	- And one manifest: 
+		```
+		artifacts/runs/{run_id}/generated_samples_manifest.json
+		```
+3. Connect Generation to `run_baseline.py`
+	- Update `run_baseline.py` so the flow becomes
+		```
+		load config
+		→ initialize run folder
+		→ load manifest
+		→ validate dataset records
+		→ run baseline generator
+		→ save generated_samples_manifest.json
+		→ save summary.md
+		```
+4. Create Baseline Generation Tests `tests/test_baseline_generation.py`
+	- Create tests/test_baseline_generation.py
+		- generator returns `num_complexes × num_samples` records  
+		- each record has a valid `complex_id`  
+		- each record has a unique `(complex_id, sample_id)`  
+		- generated pose paths are inside the run directory  
+		- generated manifest can be saved and reloaded
+5. Add a Real DiffDock Wrapper Only After Dry-Run Works
+	1. Create src/generation/generate_diffdock.py
+		- Its job should be only to wrap DiffDock inference.
+		- Do not mix evaluation, RMSD, reward scoring, or reranking into this file.
+		- This file should only handle:
+			- ComplexInput records→ DiffDock inference command→ generated pose files→ GeneratedPose records
+		1. def generate_diffdock_poses()
+			- This function should:
+				- Accept manifest-loaded `ComplexInput` records.
+				- Run DiffDock once per complex.
+				- Store raw DiffDock outputs in a run-local folder.
+				- Standardize output pose files into predictable names.
+				- Return a list of `GeneratedPose` records.
+				- Validate the output contract using `validate_generated_pose_records`.
+6. Run Baseline Generation on Tiny Dataset 
+7. Define Acceptance Criteria for This Phase
+	- Baseline Generation is complete when:  
+		1. `run_baseline.py` loads the mini manifest  
+		2. it creates generated sample records for every complex  
+		3. it saves `generated_samples_manifest.json`  
+		4. generated sample paths are run-specific  
+		5. tests pass  
+		6. the pipeline can be switched from dry-run generation to DiffDock generation without changing the dataset loader
 ##### **3. Reward Scoring**
 ###### **Key Components / Deliverables**
 8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]

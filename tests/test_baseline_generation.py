@@ -1,0 +1,175 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from src.generation.contract import validate_generated_pose_records
+from src.generation.dry_run_generator import generate_dry_run_poses
+from src.generation.generate_diffdock import generate_diffdock_poses
+from src.utils.artifact_logger import save_records_json
+from src.utils.schemas import ComplexInput, GeneratedPose
+
+
+def _records() -> list[ComplexInput]:
+    return [
+        ComplexInput(
+            complex_id="1abc",
+            protein_path="data/raw/pdbbind/1abc/protein.pdb",
+            ligand_path="data/raw/pdbbind/1abc/ligand.sdf",
+            ground_truth_pose_path="data/raw/pdbbind/1abc/ligand_gt.sdf",
+            split="mini",
+        ),
+        ComplexInput(
+            complex_id="2xyz",
+            protein_path="data/raw/pdbbind/2xyz/protein.pdb",
+            ligand_path="data/raw/pdbbind/2xyz/ligand.sdf",
+            ground_truth_pose_path="data/raw/pdbbind/2xyz/ligand_gt.sdf",
+            split="mini",
+        ),
+    ]
+
+
+def test_dry_run_generator_returns_num_complexes_times_num_samples(tmp_path):
+    records = _records()
+
+    generated = generate_dry_run_poses(
+        records=records,
+        output_dir=tmp_path / "generated_samples",
+        num_samples=3,
+    )
+
+    assert len(generated) == len(records) * 3
+
+
+def test_dry_run_generator_records_have_valid_complex_ids(tmp_path):
+    records = _records()
+    valid_complex_ids = {record.complex_id for record in records}
+
+    generated = generate_dry_run_poses(
+        records=records,
+        output_dir=tmp_path / "generated_samples",
+        num_samples=2,
+    )
+
+    assert {pose.complex_id for pose in generated} == valid_complex_ids
+
+
+def test_dry_run_generator_records_have_unique_complex_sample_keys(tmp_path):
+    generated = generate_dry_run_poses(
+        records=_records(),
+        output_dir=tmp_path / "generated_samples",
+        num_samples=2,
+    )
+
+    keys = {(pose.complex_id, pose.sample_id) for pose in generated}
+
+    assert len(keys) == len(generated)
+
+
+def test_dry_run_generator_pose_paths_are_inside_run_directory(tmp_path):
+    run_dir = tmp_path / "run"
+    output_dir = run_dir / "generated_samples"
+
+    generated = generate_dry_run_poses(
+        records=_records(),
+        output_dir=output_dir,
+        num_samples=2,
+    )
+
+    for pose in generated:
+        pose_path = Path(pose.pose_path)
+        assert pose_path.is_file()
+        assert pose_path.resolve().is_relative_to(output_dir.resolve())
+
+
+def test_generated_manifest_can_be_saved_and_reloaded(tmp_path):
+    output_path = tmp_path / "generated_samples_manifest.json"
+    generated = generate_dry_run_poses(
+        records=_records(),
+        output_dir=tmp_path / "generated_samples",
+        num_samples=2,
+    )
+
+    save_records_json(generated, output_path)
+
+    with output_path.open("r", encoding="utf-8") as f:
+        loaded_data = json.load(f)
+
+    loaded_records = [GeneratedPose.from_dict(item) for item in loaded_data]
+
+    assert loaded_records == generated
+
+
+def test_validate_generated_pose_records_rejects_duplicate_keys(tmp_path):
+    output_dir = tmp_path / "generated_samples"
+    output_dir.mkdir()
+    pose_path = output_dir / "1abc_sample_0.sdf"
+    pose_path.write_text("pose\n", encoding="utf-8")
+    duplicate = GeneratedPose("1abc", 0, str(pose_path))
+
+    with pytest.raises(ValueError, match="Duplicate generated pose key"):
+        validate_generated_pose_records(
+            records=[_records()[0]],
+            generated=[duplicate, duplicate],
+            num_samples=2,
+            output_dir=output_dir,
+        )
+
+
+def test_generate_diffdock_poses_runs_command_and_standardizes_outputs(tmp_path):
+    records = _records()
+    calls = []
+
+    def fake_runner(command, check):
+        calls.append((command, check))
+        output_dir = Path(command[command.index("--out") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for sample_id in range(2):
+            (output_dir / f"rank{sample_id + 1}.sdf").write_text(
+                f"pose {sample_id}\n",
+                encoding="utf-8",
+            )
+
+    generated = generate_diffdock_poses(
+        records=records,
+        output_dir=tmp_path / "generated_samples",
+        num_samples=2,
+        command_template=[
+            "diffdock",
+            "--protein",
+            "{protein_path}",
+            "--ligand",
+            "{ligand_path}",
+            "--out",
+            "{output_dir}",
+            "--samples",
+            "{num_samples}",
+        ],
+        runner=fake_runner,
+    )
+
+    assert len(calls) == len(records)
+    assert all(check is True for _, check in calls)
+    assert [pose.pose_path for pose in generated] == [
+        str(tmp_path / "generated_samples" / "1abc_sample_0.sdf"),
+        str(tmp_path / "generated_samples" / "1abc_sample_1.sdf"),
+        str(tmp_path / "generated_samples" / "2xyz_sample_0.sdf"),
+        str(tmp_path / "generated_samples" / "2xyz_sample_1.sdf"),
+    ]
+    assert all(Path(pose.pose_path).is_file() for pose in generated)
+
+
+def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
+    def fake_runner(command, check):
+        output_dir = Path(command[command.index("--out") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "only_pose.sdf").write_text("pose\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="expected at least 2"):
+        generate_diffdock_poses(
+            records=[_records()[0]],
+            output_dir=tmp_path / "generated_samples",
+            num_samples=2,
+            command_template=["diffdock", "--out", "{output_dir}"],
+            runner=fake_runner,
+        )

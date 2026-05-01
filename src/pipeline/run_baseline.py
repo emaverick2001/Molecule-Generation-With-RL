@@ -8,6 +8,7 @@ from pathlib import Path
 
 from src.data.loaders import load_complex_manifest
 from src.data.validation import EXPECTED_EXTENSIONS, validate_manifest_records
+from src.generation.dry_run_generator import generate_dry_run_poses
 from src.utils.artifact_logger import save_csv, save_json, save_records_json, save_text
 from src.utils.config import load_experiment_config
 from src.utils.run_logger import get_artifact_paths, initialize_run
@@ -34,6 +35,7 @@ def build_dataset_summary(records: list[ComplexInput], config: dict) -> dict:
 def run_baseline_dry_run(
     config: dict,
     complexes: list[ComplexInput],
+    generated_output_dir: str | Path,
 ) -> tuple[list[GeneratedPose], list[RewardRecord], dict]:
     """
     MVP placeholder for DiffDock baseline.
@@ -49,7 +51,11 @@ def run_baseline_dry_run(
 
     num_samples = config["generation"]["num_samples"]
     rmsd_threshold = config["evaluation"]["rmsd_threshold"]
-    generated_samples = []
+    generated_samples = generate_dry_run_poses(
+        records=complexes,
+        output_dir=generated_output_dir,
+        num_samples=num_samples,
+    )
     reward_records = []
     metric_records = []
 
@@ -66,24 +72,18 @@ def run_baseline_dry_run(
             )
         )
 
-        for sample_id in range(num_samples):
-            generated_samples.append(
-                GeneratedPose(
-                    complex_id=complex_input.complex_id,
-                    sample_id=sample_id,
-                    pose_path=(
-                        "artifacts/generated_samples/diffdock/"
-                        f"{complex_input.complex_id}_sample_{sample_id}.sdf"
-                    ),
-                    confidence_score=None,
-                )
-            )
+        complex_generated_samples = [
+            pose
+            for pose in generated_samples
+            if pose.complex_id == complex_input.complex_id
+        ]
 
-            simulated_rmsd = round(top1_rmsd + (0.15 * sample_id), 3)
+        for pose in complex_generated_samples:
+            simulated_rmsd = round(top1_rmsd + (0.15 * pose.sample_id), 3)
             reward_records.append(
                 RewardRecord(
-                    complex_id=complex_input.complex_id,
-                    sample_id=sample_id,
+                    complex_id=pose.complex_id,
+                    sample_id=pose.sample_id,
                     reward=-simulated_rmsd,
                     reward_type="negative_rmsd",
                     valid=True,
@@ -155,7 +155,11 @@ def main() -> None:
     validation_report = validate_manifest_records(complexes)
     dataset_summary = build_dataset_summary(complexes, config)
 
-    generated_samples, reward_records, metrics = run_baseline_dry_run(config, complexes)
+    generated_samples, reward_records, metrics = run_baseline_dry_run(
+        config=config,
+        complexes=complexes,
+        generated_output_dir=run_dir / "generated_samples",
+    )
 
     save_records_json(
         complexes,
