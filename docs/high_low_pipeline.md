@@ -513,7 +513,21 @@ example_input = {
 			```
 	10. Add a script for real DiffDock baseline scripts/run_diffdock_smoke.sh
 	11. Add a script to test more complexes (5-10 complex mini manifest) scripts/run_diffdock_tiny.sh
-	12. Completion Criteria 
+	12. Add a repeatable tiny real split builder
+		- `scripts/create_tiny_real_pdbbind.py`
+		- `configs/diffdock/tiny_real.yaml`
+		- `scripts/run_diffdock_tiny_real.sh`
+		- Inputs:
+			- extracted real PDBBind source root
+			- five selected complex IDs
+		- Outputs:
+			- `data/raw/pdbbind_real/{complex_id}/protein.pdb`
+			- `data/raw/pdbbind_real/{complex_id}/ligand.sdf`
+			- `data/raw/pdbbind_real/{complex_id}/ligand_gt.sdf`
+			- `data/processed/diffdock/splits/tiny_real.txt`
+			- `data/processed/diffdock/manifests/tiny_real_manifest.json`
+			- `data/processed/diffdock/manifests/tiny_real_validation_report.json`
+	13. Completion Criteria 
 		1. `run_baseline.py` loads the mini manifest  
 		2. it creates generated sample records for every complex  
 		3. it saves `generated_samples_manifest.json`  

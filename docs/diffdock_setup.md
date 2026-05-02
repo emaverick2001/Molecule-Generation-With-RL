@@ -200,6 +200,58 @@ Then run:
 SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
+## Build A Tiny Real Split
+
+After the one-complex smoke test works, create a repeatable tiny real split from
+selected PDBBind IDs:
+
+```bash
+uv run python scripts/create_tiny_real_pdbbind.py \
+  --source data/raw/pdbbind \
+  --complex-id 1a30 \
+  --complex-id <id2> \
+  --complex-id <id3> \
+  --complex-id <id4> \
+  --complex-id <id5>
+```
+
+Or use a file:
+
+```bash
+cat > tiny_real_ids.txt <<'EOF'
+1a30
+<id2>
+<id3>
+<id4>
+<id5>
+EOF
+
+uv run python scripts/create_tiny_real_pdbbind.py \
+  --source data/raw/pdbbind \
+  --ids-file tiny_real_ids.txt
+```
+
+This writes:
+
+```text
+data/raw/pdbbind_real/<complex_id>/
+data/processed/diffdock/splits/tiny_real.txt
+data/processed/diffdock/manifests/tiny_real_manifest.json
+data/processed/diffdock/manifests/tiny_real_validation_report.json
+```
+
+Run the 5-complex baseline with one sample per complex:
+
+```bash
+./scripts/run_diffdock_tiny_real.sh
+```
+
+Then evaluate:
+
+```bash
+./scripts/run_evaluation.sh artifacts/runs/<new_run_id>
+```
+
 ## Package Run Artifacts For Download
 
 After a smoke or tiny run on ICRN, package the latest run for download from the

@@ -24,6 +24,13 @@ SMOKE_MANIFEST_PATH = Path("data/processed/diffdock/manifests/smoke_manifest.jso
 SMOKE_VALIDATION_REPORT_PATH = Path(
     "data/processed/diffdock/manifests/smoke_validation_report.json"
 )
+TINY_REAL_SPLIT_PATH = Path("data/processed/diffdock/splits/tiny_real.txt")
+TINY_REAL_MANIFEST_PATH = Path(
+    "data/processed/diffdock/manifests/tiny_real_manifest.json"
+)
+TINY_REAL_VALIDATION_REPORT_PATH = Path(
+    "data/processed/diffdock/manifests/tiny_real_validation_report.json"
+)
 
 
 def _is_archive(path: Path) -> bool:
@@ -136,6 +143,38 @@ def _write_smoke_manifest(complex_id: str, output_root: Path) -> None:
     save_json(report, SMOKE_VALIDATION_REPORT_PATH)
 
 
+def write_real_manifest(
+    complex_ids: list[str],
+    output_root: Path,
+    split: str,
+    split_path: Path,
+    manifest_path: Path,
+    validation_report_path: Path,
+) -> None:
+    split_path.parent.mkdir(parents=True, exist_ok=True)
+    split_path.write_text("\n".join(complex_ids) + "\n", encoding="utf-8")
+
+    build_and_save_manifest(
+        ids_path=split_path,
+        raw_root=output_root,
+        split=split,
+        output_path=manifest_path,
+    )
+
+    report = validate_manifest_file(manifest_path)
+    save_json(report, validation_report_path)
+
+
+def extract_complex_to_real_root(
+    source_root: Path,
+    complex_id: str,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> Path:
+    complex_id = complex_id.lower()
+    complex_dir = _find_complex_dir(source_root, complex_id)
+    return _copy_complex(complex_dir, complex_id, output_root)
+
+
 def extract_smoke_complex(
     source: Path,
     complex_id: str,
@@ -154,11 +193,17 @@ def extract_smoke_complex(
 
         with tempfile.TemporaryDirectory() as tmpdir:
             extracted_root = _extract_archive(source, Path(tmpdir))
-            complex_dir = _find_complex_dir(extracted_root, complex_id)
-            output_dir = _copy_complex(complex_dir, complex_id, output_root)
+            output_dir = extract_complex_to_real_root(
+                source_root=extracted_root,
+                complex_id=complex_id,
+                output_root=output_root,
+            )
     else:
-        complex_dir = _find_complex_dir(source, complex_id)
-        output_dir = _copy_complex(complex_dir, complex_id, output_root)
+        output_dir = extract_complex_to_real_root(
+            source_root=source,
+            complex_id=complex_id,
+            output_root=output_root,
+        )
 
     _write_smoke_manifest(complex_id, output_root)
     return output_dir

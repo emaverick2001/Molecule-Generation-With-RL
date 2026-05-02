@@ -15,7 +15,9 @@ from src.data.manifests import load_manifest
 from src.utils.schemas import ComplexInput
 
 
-DEFAULT_VALID_SPLITS = frozenset({"smoke", "mini", "train", "val", "test"})
+DEFAULT_VALID_SPLITS = frozenset(
+    {"smoke", "mini", "tiny_real", "train", "val", "test"}
+)
 
 EXPECTED_EXTENSIONS = {
     "protein_path": ".pdb",
