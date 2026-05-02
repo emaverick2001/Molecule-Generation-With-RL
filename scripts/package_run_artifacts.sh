@@ -97,7 +97,7 @@ STAGED_RUN_DIR="$STAGING_ROOT/$RUN_DIR"
 mkdir -p "$STAGED_RUN_PARENT"
 
 if [[ "$MODE" == "full" ]]; then
-  cp -a "$RUN_DIR" "$STAGED_RUN_PARENT/"
+  cp -R "$RUN_DIR" "$STAGED_RUN_PARENT/"
   tar -C "$STAGING_ROOT" -czf "$ARCHIVE_PATH" "$RUN_DIR"
 else
   PATH_LIST_FILE="$(mktemp)"
@@ -133,7 +133,7 @@ else
   while IFS= read -r path; do
     staged_parent="$STAGING_ROOT/$(dirname "$path")"
     mkdir -p "$staged_parent"
-    cp -a "$path" "$staged_parent/"
+    cp -R "$path" "$staged_parent/"
   done < "$PATH_LIST_FILE"
 
   tar -C "$STAGING_ROOT" -czf "$ARCHIVE_PATH" "$RUN_DIR"
