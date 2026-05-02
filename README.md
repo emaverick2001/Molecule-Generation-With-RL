@@ -189,6 +189,12 @@ Then run the one-complex smoke test:
 SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
+Package run artifacts for download from ICRN/Jupyter:
+
+```bash
+./scripts/package_run_artifacts.sh artifacts/runs/<run_id>
+```
+
 Real DiffDock smoke-test complexes should live under `data/raw/pdbbind_real/`.
 Use the extractor after downloading a PDBBind package:
 

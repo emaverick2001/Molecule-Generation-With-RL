@@ -199,3 +199,30 @@ Then run:
 ```bash
 SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
+
+## Package Run Artifacts For Download
+
+After a smoke or tiny run on ICRN, package the latest run for download from the
+Jupyter file browser:
+
+```bash
+./scripts/package_run_artifacts.sh
+```
+
+Package a specific run:
+
+```bash
+./scripts/package_run_artifacts.sh artifacts/runs/2026-05-02_diffdock_baseline_seed42
+```
+
+Package the full run directory instead of the key artifacts:
+
+```bash
+./scripts/package_run_artifacts.sh artifacts/runs/2026-05-02_diffdock_baseline_seed42 --full
+```
+
+Archives are written to:
+
+```text
+packaged_runs/
+```
