@@ -7,6 +7,7 @@ import pytest
 from src.generation.contract import validate_generated_pose_records
 from src.generation.dry_run_generator import generate_dry_run_poses
 from src.generation.generate_diffdock import (
+    _collect_diffdock_output_poses,
     generate_diffdock_poses,
     preflight_diffdock_generation,
     run_diffdock_command,
@@ -206,6 +207,60 @@ def test_generate_diffdock_poses_discovers_recursive_sdf_outputs(tmp_path):
 
     assert len(generated) == 1
     assert Path(generated[0].pose_path).is_file()
+
+
+def test_collect_diffdock_output_poses_sorts_by_numeric_rank_and_confidence(tmp_path):
+    output_dir = tmp_path / "raw_outputs"
+    output_dir.mkdir()
+
+    for filename in [
+        "rank10_confidence-1.85.sdf",
+        "rank2_confidence-0.75.sdf",
+        "rank1.sdf",
+        "rank1_confidence-0.70.sdf",
+        "notes.sdf",
+    ]:
+        (output_dir / filename).write_text(filename, encoding="utf-8")
+
+    poses = _collect_diffdock_output_poses(output_dir)
+
+    assert [pose.rank for pose in poses] == [1, 2, 10]
+    assert [pose.path.name for pose in poses] == [
+        "rank1_confidence-0.70.sdf",
+        "rank2_confidence-0.75.sdf",
+        "rank10_confidence-1.85.sdf",
+    ]
+    assert [pose.confidence_score for pose in poses] == [-0.70, -0.75, -1.85]
+
+
+def test_generate_diffdock_poses_uses_numeric_rank_order_and_confidence(tmp_path):
+    def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
+        output_dir = Path(command[command.index("--out") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for filename in [
+            "rank10_confidence-1.85.sdf",
+            "rank1_confidence-0.70.sdf",
+            "rank2_confidence-0.75.sdf",
+        ]:
+            (output_dir / filename).write_text(filename, encoding="utf-8")
+
+    generated = generate_diffdock_poses(
+        records=[_records()[0]],
+        output_dir=tmp_path / "generated_samples",
+        num_samples=2,
+        command_template=["diffdock", "--out", "{raw_output_dir}"],
+        repo_dir=tmp_path,
+        runner=fake_runner,
+    )
+
+    assert [pose.sample_id for pose in generated] == [0, 1]
+    assert [pose.confidence_score for pose in generated] == [-0.70, -0.75]
+    assert (tmp_path / "generated_samples" / "1abc_sample_0.sdf").read_text(
+        encoding="utf-8"
+    ) == "rank1_confidence-0.70.sdf"
+    assert (tmp_path / "generated_samples" / "1abc_sample_1.sdf").read_text(
+        encoding="utf-8"
+    ) == "rank2_confidence-0.75.sdf"
 
 
 def test_preflight_diffdock_generation_requires_repo_dir(tmp_path):

@@ -464,13 +464,18 @@ example_input = {
 		- Each complex should get logs like:
 			- artifacts/runs/{run_id}/logs/1abc.stdout.logartifacts/runs/{run_id}/logs/1abc.stderr.log
 	6. Discover DiffDock-generated SDF outputs
-		- After each DiffDock run, Codex should search:
+		- After each DiffDock run, the wrapper searches:
 			- artifacts/runs/{run_id}/raw_diffdock_outputs/{complex_id}/
 		- for:
 			- *.sdf
-		- Use recursive search:
-			- sdf_paths = sorted(raw_output_dir.rglob("*.sdf"))
-		- Then copy the first num_samples into your standardized folder:
+		- Parse DiffDock output names like:
+			- `rank1.sdf`
+			- `rank1_confidence-0.70.sdf`
+			- `rank10_confidence-1.85.sdf`
+		- Sort by numeric rank, not lexicographic filename order.
+		- Prefer `rankN_confidenceX.sdf` over `rankN.sdf` when both exist.
+		- Store parsed confidence values in `GeneratedPose.confidence_score`.
+		- Then copy the first `num_samples` ranked poses into your standardized folder:
 			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_0.sdf
 			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_1.sdf
 	7. Preserve your existing output contract

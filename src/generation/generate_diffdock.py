@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 from src.generation.contract import validate_generated_pose_records
@@ -24,6 +26,16 @@ from src.utils.schemas import ComplexInput, GeneratedPose
 
 
 Runner = Callable[..., Any]
+DIFFDOCK_RANK_PATTERN = re.compile(
+    r"^rank(?P<rank>\d+)(?:_confidence(?P<confidence>[+-]?\d+(?:\.\d+)?))?\.sdf$"
+)
+
+
+@dataclass(frozen=True)
+class DiffDockOutputPose:
+    path: Path
+    rank: int
+    confidence_score: float | None
 
 
 def _resolve_path(path: str | Path) -> str:
@@ -212,33 +224,70 @@ def _format_file_listing(path: Path, max_entries: int = 30) -> str:
     return "\n".join(rendered)
 
 
+def _parse_diffdock_output_pose(path: Path) -> DiffDockOutputPose | None:
+    match = DIFFDOCK_RANK_PATTERN.match(path.name)
+
+    if match is None:
+        return None
+
+    confidence = match.group("confidence")
+
+    return DiffDockOutputPose(
+        path=path,
+        rank=int(match.group("rank")),
+        confidence_score=float(confidence) if confidence is not None else None,
+    )
+
+
+def _collect_diffdock_output_poses(raw_output_dir: Path) -> list[DiffDockOutputPose]:
+    parsed_poses = [
+        parsed_pose
+        for path in raw_output_dir.rglob("*.sdf")
+        if (parsed_pose := _parse_diffdock_output_pose(path)) is not None
+    ]
+
+    by_rank: dict[int, DiffDockOutputPose] = {}
+
+    for pose in parsed_poses:
+        current = by_rank.get(pose.rank)
+
+        if current is None:
+            by_rank[pose.rank] = pose
+            continue
+
+        if current.confidence_score is None and pose.confidence_score is not None:
+            by_rank[pose.rank] = pose
+
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
 def _standardize_diffdock_outputs(
     record: ComplexInput,
     raw_output_dir: Path,
     output_dir: Path,
     num_samples: int,
 ) -> list[GeneratedPose]:
-    raw_pose_paths = sorted(raw_output_dir.rglob("*.sdf"))
+    raw_poses = _collect_diffdock_output_poses(raw_output_dir)
 
-    if len(raw_pose_paths) < num_samples:
+    if len(raw_poses) < num_samples:
         raise FileNotFoundError(
-            f"DiffDock produced {len(raw_pose_paths)} SDF files for "
+            f"DiffDock produced {len(raw_poses)} parseable ranked SDF files for "
             f"{record.complex_id}, expected at least {num_samples}: {raw_output_dir}\n"
             f"Raw output directory contents:\n{_format_file_listing(raw_output_dir)}"
         )
 
     generated = []
 
-    for sample_id, raw_pose_path in enumerate(raw_pose_paths[:num_samples]):
+    for sample_id, raw_pose in enumerate(raw_poses[:num_samples]):
         standardized_path = output_dir / f"{record.complex_id}_sample_{sample_id}.sdf"
-        shutil.copyfile(raw_pose_path, standardized_path)
+        shutil.copyfile(raw_pose.path, standardized_path)
 
         generated.append(
             GeneratedPose(
                 complex_id=record.complex_id,
                 sample_id=sample_id,
                 pose_path=str(standardized_path),
-                confidence_score=None,
+                confidence_score=raw_pose.confidence_score,
             )
         )
 
