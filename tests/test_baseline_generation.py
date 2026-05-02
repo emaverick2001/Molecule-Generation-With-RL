@@ -171,7 +171,7 @@ def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "only_pose.sdf").write_text("pose\n", encoding="utf-8")
 
-    with pytest.raises(FileNotFoundError, match="expected at least 2"):
+    with pytest.raises(FileNotFoundError) as error:
         generate_diffdock_poses(
             records=[_records()[0]],
             output_dir=tmp_path / "generated_samples",
@@ -180,6 +180,12 @@ def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
             repo_dir=tmp_path,
             runner=fake_runner,
         )
+
+    message = str(error.value)
+
+    assert "expected at least 2" in message
+    assert "Raw output directory contents" in message
+    assert "only_pose.sdf" in message
 
 
 def test_generate_diffdock_poses_discovers_recursive_sdf_outputs(tmp_path):

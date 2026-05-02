@@ -195,6 +195,23 @@ def run_diffdock_command(
     return result
 
 
+def _format_file_listing(path: Path, max_entries: int = 30) -> str:
+    if not path.exists():
+        return "<directory does not exist>"
+
+    entries = sorted(item.relative_to(path) for item in path.rglob("*"))
+
+    if not entries:
+        return "<empty directory>"
+
+    rendered = [str(entry) for entry in entries[:max_entries]]
+
+    if len(entries) > max_entries:
+        rendered.append(f"... {len(entries) - max_entries} more entries")
+
+    return "\n".join(rendered)
+
+
 def _standardize_diffdock_outputs(
     record: ComplexInput,
     raw_output_dir: Path,
@@ -206,7 +223,8 @@ def _standardize_diffdock_outputs(
     if len(raw_pose_paths) < num_samples:
         raise FileNotFoundError(
             f"DiffDock produced {len(raw_pose_paths)} SDF files for "
-            f"{record.complex_id}, expected at least {num_samples}: {raw_output_dir}"
+            f"{record.complex_id}, expected at least {num_samples}: {raw_output_dir}\n"
+            f"Raw output directory contents:\n{_format_file_listing(raw_output_dir)}"
         )
 
     generated = []

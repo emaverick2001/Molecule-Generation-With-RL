@@ -30,7 +30,8 @@ datasets:
   # Shared defaults for DiffDock data locations.
   diffdock:
     name: pdbbind
-    raw_dir: data/raw/pdbbind
+    raw_dir: data/raw/pdbbind_real
+    synthetic_raw_dir: data/raw/pdbbind_synthetic
     processed_dir: data/processed/diffdock
     split_dir: data/processed/diffdock/splits
     # Canonical manifest used to resolve sample paths and metadata.

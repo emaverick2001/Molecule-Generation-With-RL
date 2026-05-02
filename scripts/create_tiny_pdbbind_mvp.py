@@ -18,7 +18,7 @@ from src.utils.artifact_logger import save_json
 
 
 COMPLEX_IDS = ["1abc", "2xyz", "3def", "4ghi", "5jkl"]
-RAW_ROOT = Path("data/raw/pdbbind")
+RAW_ROOT = Path("data/raw/pdbbind_synthetic")
 SPLIT_PATH = Path("data/processed/diffdock/splits/mini.txt")
 MANIFEST_PATH = Path("data/processed/diffdock/manifests/mini_manifest.json")
 VALIDATION_REPORT_PATH = Path(

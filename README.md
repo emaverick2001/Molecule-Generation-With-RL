@@ -131,7 +131,7 @@ uv run python scripts/create_tiny_pdbbind_mvp.py --run-baseline --exist-ok
 This command writes dataset files under:
 
 ```text
-data/raw/pdbbind/
+data/raw/pdbbind_synthetic/
   1abc/
   2xyz/
   3def/
@@ -189,6 +189,15 @@ Then run the one-complex smoke test:
 SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
+Real DiffDock smoke-test complexes should live under `data/raw/pdbbind_real/`.
+Use the extractor after downloading a PDBBind package:
+
+```bash
+uv run python scripts/extract_pdbbind_smoke_complex.py \
+  --source /path/to/extracted_or_archived_pdbbind \
+  --complex-id <real_pdbbind_id>
+```
+
 Use `--config` to run another DiffDock config through the same entry point once
 the corresponding pipeline behavior is implemented:
 
@@ -232,7 +241,8 @@ Large datasets and model checkpoints are not stored in this repository. The
 MVP scripts and configs assume the following repo-relative locations:
 
 ```text
-data/raw/pdbbind/
+data/raw/pdbbind_real/
+data/raw/pdbbind_synthetic/
 data/processed/diffdock/splits/
 data/processed/diffdock/manifests/
 data/raw/pepflow/
@@ -242,7 +252,7 @@ artifacts/checkpoints/pepflow/
 external/DiffDock/
 ```
 
-The mini experiment creates synthetic files in `data/raw/pdbbind/` and
+The mini experiment creates synthetic files in `data/raw/pdbbind_synthetic/` and
 `data/processed/diffdock/`. These paths are ignored by git, along with
 `artifacts/` and `external/`.
 

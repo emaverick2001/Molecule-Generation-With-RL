@@ -40,6 +40,15 @@ conda activate diffdock
 SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 ```
 
+The smoke script looks for real complexes under:
+
+```text
+data/raw/pdbbind_real/
+```
+
+If your real PDBBind data is elsewhere, either extract one complex into
+`data/raw/pdbbind_real/` or set `PDBBIND_RAW_ROOT`.
+
 Run the tiny multi-complex test:
 
 ```bash
@@ -139,3 +148,37 @@ Do not use the synthetic MVP dataset for real DiffDock inference. It exists to
 test this repository's artifact plumbing. Real DiffDock smoke tests should point
 to an actual PDBBind-style complex with `protein.pdb`, `ligand.sdf`, and
 `ligand_gt.sdf`.
+
+## Getting One Real PDBBind Complex
+
+PDBBind data is distributed through the PDBbind-CN site and typically requires
+registration/download approval. Download a protein-ligand package such as a
+refined/core/general set package, then use:
+
+```bash
+uv run python scripts/extract_pdbbind_smoke_complex.py \
+  --source /path/to/pdbbind_package_or_extracted_root \
+  --complex-id <real_pdbbind_id>
+```
+
+The script copies:
+
+```text
+<complex_id>_protein.pdb -> data/raw/pdbbind_real/<complex_id>/protein.pdb
+<complex_id>_ligand.sdf  -> data/raw/pdbbind_real/<complex_id>/ligand.sdf
+<complex_id>_ligand.sdf  -> data/raw/pdbbind_real/<complex_id>/ligand_gt.sdf
+```
+
+and writes:
+
+```text
+data/processed/diffdock/splits/smoke.txt
+data/processed/diffdock/manifests/smoke_manifest.json
+data/processed/diffdock/manifests/smoke_validation_report.json
+```
+
+Then run:
+
+```bash
+SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
+```
