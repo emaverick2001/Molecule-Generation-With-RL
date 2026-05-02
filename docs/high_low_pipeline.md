@@ -396,7 +396,6 @@ example_input = {
 		  backend: diffdock
 		  num_samples: 2
 		  use_confidence_reranking: false
-		
 		diffdock:
 		  repo_dir: external/DiffDock
 		  config_path: external/DiffDock/default_inference_args.yaml
@@ -503,7 +502,6 @@ example_input = {
 			  name: pdbbind_tiny
 			  split: smoke
 			  manifest_path: data/processed/diffdock/manifests/smoke_manifest.json
-			
 			generation:
 			  backend: diffdock
 			  num_samples: 1
@@ -536,22 +534,6 @@ example_input = {
 ##### **3. Evaluation**
 - This phase evaluates generated poses against the ground-truth bound ligand pose using an **offline** metric. For the MVP, the core metric should be symmetry-aware ligand RMSD, with top-k success thresholds matching common DiffDock reporting conventions. The original DiffDock paper reports success at RMSD < 2 Å, and the current repository evaluator computes `rmsds_below_2`, `rmsds_below_5`, `top5_rmsds_below_2`, and `top10_rmsds_below_2`, along with centroid-distance summaries. 
 - RDKit’s documentation makes the intended RMSD choice clear. `SDMolSupplier` is the standard way to read SDF sets and should be checked for `None` values; `MolFromMolFile()` returns `None` on parse failure; and `rdMolAlign.CalcRMS()` is documented as useful for comparing docking poses and co-crystallized ligands because it computes RMSD in place without pre-aligning the probe to the reference. RDKit also warns that symmetry-aware matching can suffer combinatorial explosion when hydrogens are present. DiffDock’s own evaluator removes hydrogens before symmetry-aware RMSD and then reports RMSD, centroid-distance, and top-k summaries. That is the rationale for the default MVP design here: `CalcRMS`, symmetry-aware, `remove_hs=True`, and top-k aggregation at 2 Å and 5 Å.
-- Implementation status: the offline evaluation phase is implemented. It can evaluate any completed run directory that contains:
-	- `input_manifest.json`
-	- `generated_samples_manifest.json`
-	- generated SDF files referenced by the generated-samples manifest
-- Run command:
-	```bash
-	./scripts/run_evaluation.sh artifacts/runs/{run_id}
-	```
-- Outputs:
-	```text
-	artifacts/runs/{run_id}/
-	├── pose_metrics.csv
-	├── metrics.json
-	└── evaluation_summary.md
-	```
-- Note: dry-run placeholder SDF files intentionally contain no atoms, so evaluation will emit invalid rows for dry-run generated poses. Real DiffDock SDF outputs should produce valid RMSD and centroid-distance rows.
 ###### **Key Components / Deliverables**
 1. src/evaluation/__init__.py
 2. src/evaluation/rmsd.py
@@ -631,117 +613,119 @@ example_input = {
 	def load_pose_metrics_csv(path: Union[str, Path]) -> list["PoseMetricRecord"]:
 	```
 4. src/pipeline/run_evaluation.py
-	- CLI entry point for offline evaluation:
-		```bash
-		uv run python -m src.pipeline.run_evaluation --run-dir artifacts/runs/{run_id}
-		```
-	- Loads run-local manifests.
-	- Computes per-pose metrics.
-	- Writes `pose_metrics.csv`.
-	- Writes aggregate `metrics.json`.
-	- Writes `evaluation_summary.md`.
-5. tests/test_rmsd.py
+5. tests/test_rmsd_evaluation.py
 	- identical SDFs produce RMSD ≈ 0
 	- moved conformer produces RMSD > 0
 	- invalid SDF path raises `FileNotFoundError`
 	- invalid SDF contents produce invalid metric row, not pipeline crash
-6. tests/test_reward_computation.py
+6. tests/test_metrics_aggregation.py
 	- aggregation computes correct `success_at_1` / `success_at_5`
 	- top-k metrics are `None` when insufficient poses exist
 	- reranked records are evaluated in reranked order
-	- pose metric CSV artifacts can be saved and loaded
 7. scripts/run_evaluation.sh
 8. configs/diffdock/evaluation.yaml
-9. Completion Criteria
-	1. evaluation loads `input_manifest.json`
-	2. evaluation loads `generated_samples_manifest.json`
-	3. one `pose_metrics.csv` row is produced per generated pose
-	4. invalid poses are logged as invalid rows without crashing the run
-	5. `metrics.json` contains aggregate RMSD, centroid-distance, and success@k metrics
-	6. tests pass
-##### **4. Confidence Reranking****
+##### **4. Confidence Reranking**
 - This phase converts the per-pose DiffDock confidence signal into a run-local reward artifact that is downstream-friendly, reproducible, and separate from evaluation.
+- Implementation status: offline reranking is implemented. It can rerank a completed run directory from either:
+	- confidence scores stored in `generated_samples_manifest.json`
+	- an existing `rewards.csv` artifact
+- Run command:
+	```bash
+	./scripts/run_reranking.sh artifacts/runs/{run_id}
+	```
+- For dry-run artifacts that do not contain confidence scores, use a config without a `reranking.reward_source` override so the stage defaults to `rewards_csv`:
+	```bash
+	./scripts/run_reranking.sh artifacts/runs/{run_id} --config configs/diffdock/evaluation.yaml
+	```
+- Outputs:
+	```text
+	artifacts/runs/{run_id}/
+	├── reranked_generated_samples_manifest.json
+	├── reranking_summary.json
+	└── reranking_summary.md
+	```
+- To evaluate the reranked order:
+	```bash
+	uv run python -m src.pipeline.run_evaluation \
+	  --run-dir artifacts/runs/{run_id} \
+	  --generated-manifest artifacts/runs/{run_id}/reranked_generated_samples_manifest.json
+	```
 ###### **Key Components / Deliverables**
 1. src/rewards/confidence_reward.py
-	1. require_confidence_scores(...)a
-		- raise `ValueError` if any pose has `confidence_score is None`.
+	1. `require_confidence_scores(...)`
+		- raise `ValueError` if any pose has `confidence_score is None`.
+	2. `transform_confidence_score(...)`
+		- `identity` → return raw score
+		- `sigmoid` → `1 / (1 + exp(-score / temperature))`
+	3. `build_confidence_reward_records(...)`
+		- Convert `GeneratedPose.confidence_score` values into `RewardRecord` rows with `reward_type="confidence"`.
+2. src/evaluation/reranking.py
+	1. `build_reward_lookup(...)`
+		```python
+		def build_reward_lookup(
+		    reward_records: list["RewardRecord"],
+		) -> dict[tuple[str, int], "RewardRecord"]:
 		```
-		def require_confidence_scores(poses: list["GeneratedPose"]) -> None:
+	2. `rerank_generated_poses(...)`
+		```python
+		def rerank_generated_poses(
+		    generated_records: list["GeneratedPose"],
+		    reward_records: list["RewardRecord"],
+		    descending: bool = True,
+		    tie_breaker: str = "sample_id",
+		) -> list["RerankedPose"]:
 		```
-	2. transform_confidence_score(...)
-		- `identity` → return raw score
-		- `sigmoid` → `1 / (1 + exp(-score / temperature))`
-		- `centered_sigmoid` → `2 * sigmoid - 1`
-		- raise `ValueError` on unsupported mode
+		- join on `(complex_id, sample_id)`
+		- group by `complex_id`
+		- assign `original_rank` from original within-complex order
+		- sort by reward descending
+		- stable tie-break by `sample_id`
+		- emit `RerankedPose` rows
+		- **do not copy or rename SDF files**
+	3. `summarize_reranking(...)`
+		```python
+		def summarize_reranking(
+		    reranked_records: list["RerankedPose"],
+		) -> dict[str, object]:
 		```
-		def transform_confidence_score(
-		    score: float,
-		    mode: str = "identity",
-		    temperature: float = 1.0,
-		) -> float:
-		```
-	3. score_poses_with_confidence(...)
-		```
-		def score_poses_with_confidence(
-		    poses: list["GeneratedPose"],
-		    transform: str = "identity",
-		    temperature: float = 1.0,
-		    invalid_policy: str = "raise",
-		) -> list["RewardRecord"]:
-		```
-		- iterate over generated poses
-		- if `confidence_score` is present:
-			- compute `reward`
-			- emit valid `RewardRecord`
-		- if missing:
-			- `invalid_policy == "raise"` → raise `ValueError`
-			- `invalid_policy == "mark_invalid"` → emit invalid row with `reward=None`
-	4. summarize_rewards(...)
-		```
-		def summarize_rewards(records: list["RewardRecord"]) -> dict[str, object]:
-		```
-
-	5. save_rewards_csv(...)
-		```
-		def save_rewards_csv(
-		    records: list["RewardRecord"],
+		- count complexes
+		- count poses
+		- compute number of poses whose rank changed
+		- compute mean absolute rank delta
+	4. `save_reranked_manifest(...)`
+		```python
+		def save_reranked_manifest(
+		    records: list["RerankedPose"],
 		    path: Union[str, Path],
 		) -> None:
 		```
-		- write deterministic CSV with header row
-		- create parent directories
-	6. load_rewards_csv(...)
+	5. `load_reranked_manifest(...)`
+		```python
+		def load_reranked_manifest(path: Union[str, Path]) -> list["RerankedPose"]:
 		```
-		def load_rewards_csv(path: Union[str, Path]) -> list["RewardRecord"]:
-		```
-		- read CSV
-		- coerce optional float/bool values
-		- return list of `RewardRecord`
-2. src/pipeline/run_reward_scoring.py
-3. tests/test_confidence_reward.py
-	- `   transform_confidence_score("identity")` returns raw value
-	- sigmoid transform is monotonic and bounded
-	- missing confidence with `invalid_policy="raise"` raises `ValueError`
-	- missing confidence with `invalid_policy="mark_invalid"` yields invalid rows
-	- scoring produces one `RewardRecord` per `GeneratedPose`
-	- CSV roundtrip works
-	- reward summary counts valid/invalid correctly
-4. scripts/run_reward_scoring.sh
-5. configs/diffdock/reward_scoring.yaml
-	```
-	experiment:
-	  name: diffdock_reward_scoring
-	  model: diffdock
-	  mode: reward_scoring
-	  seed: 42
-	
-	reward:
-	  enabled: true
-	  source: diffdock_confidence
-	  transform: identity
-	  temperature: 1.0
-	  invalid_policy: raise
-	```
+3. src/pipeline/run_reranking.py
+	- Loads `generated_samples_manifest.json`.
+	- Loads `rewards.csv` or derives confidence rewards from generated-pose confidence scores.
+	- Writes `reranked_generated_samples_manifest.json`.
+	- Writes `reranking_summary.json`.
+	- Writes `reranking_summary.md`.
+4. tests/test_reranking.py
+	- reranking sorts descending reward within each complex
+	- ties break by `sample_id`
+	- missing reward row raises clear error
+	- reranked manifest roundtrip works
+	- reranking does not duplicate or rename pose files
+	- confidence-only reranking is idempotent if original manifest is already sorted by confidence
+	- evaluation uses manifest order for rank, so reranked manifests affect top-k metrics
+5. scripts/run_reranking.sh
+6. configs/diffdock/rerank_baseline.yaml
+7. Completion Criteria
+	1. reranking can consume a generated-samples manifest and reward records
+	2. reranking preserves original SDF paths without copying or renaming files
+	3. reranking writes a run-local reranked manifest
+	4. missing confidence or reward rows fail with clear errors
+	5. evaluation can consume the reranked manifest and respect reranked order
+	6. tests pass
 ##### **5. Post-Training / RL Setup**
 ###### **Key Components / Deliverables**
 8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]

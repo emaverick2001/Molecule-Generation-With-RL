@@ -66,17 +66,20 @@ def evaluate_generated_poses(
     reference_by_complex_id = {
         record.complex_id: record.ground_truth_pose_path for record in input_records
     }
+    rank_by_complex_id = defaultdict(int)
     records = []
 
     for pose in generated_records:
         reference_pose_path = reference_by_complex_id.get(pose.complex_id)
+        rank_by_complex_id[pose.complex_id] += 1
+        rank = rank_by_complex_id[pose.complex_id]
 
         if reference_pose_path is None:
             records.append(
                 PoseMetricRecord(
                     complex_id=pose.complex_id,
                     sample_id=pose.sample_id,
-                    rank=pose.sample_id + 1,
+                    rank=rank,
                     pose_path=pose.pose_path,
                     reference_pose_path="",
                     rmsd=None,
@@ -104,7 +107,7 @@ def evaluate_generated_poses(
                 PoseMetricRecord(
                     complex_id=pose.complex_id,
                     sample_id=pose.sample_id,
-                    rank=pose.sample_id + 1,
+                    rank=rank,
                     pose_path=pose.pose_path,
                     reference_pose_path=reference_pose_path,
                     rmsd=round(rmsd, 6),
@@ -119,7 +122,7 @@ def evaluate_generated_poses(
                 PoseMetricRecord(
                     complex_id=pose.complex_id,
                     sample_id=pose.sample_id,
-                    rank=pose.sample_id + 1,
+                    rank=rank,
                     pose_path=pose.pose_path,
                     reference_pose_path=reference_pose_path,
                     rmsd=None,

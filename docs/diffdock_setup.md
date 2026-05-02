@@ -61,6 +61,45 @@ You can override it manually:
 DIFFDOCK_PYTHON=/path/to/diffdock/python ./scripts/run_diffdock_smoke.sh
 ```
 
+## Check The DiffDock Environment
+
+Before running inference on ICRN, verify that PyTorch and the PyTorch Geometric
+compiled extensions import cleanly:
+
+```bash
+conda activate diffdock
+./scripts/check_diffdock_env.sh
+```
+
+If you see errors like:
+
+```text
+undefined symbol: _ZN5torch3jit17parseSchemaOrNameERKSsb
+```
+
+then the installed `torch_cluster`, `torch_scatter`, `torch_sparse`, or
+`torch_spline_conv` wheels do not match the installed PyTorch/CUDA build.
+
+Inspect the active versions:
+
+```bash
+python -c "import torch; print(torch.__version__); print(torch.version.cuda)"
+nvcc --version
+```
+
+Then reinstall the PyTorch Geometric compiled extensions using wheels that
+match your PyTorch and CUDA versions. For example, if PyTorch reports
+`2.0.x` and `torch.version.cuda` reports `11.8`:
+
+```bash
+pip uninstall -y torch-scatter torch-sparse torch-cluster torch-spline-conv pyg-lib
+pip install --force-reinstall --no-cache-dir \
+  torch_scatter torch_sparse torch_cluster torch_spline_conv \
+  -f https://data.pyg.org/whl/torch-2.0.0+cu118.html
+```
+
+Adjust the `torch-...+cu...` URL to match your actual printed versions.
+
 ## ICRN / GPU Notes
 
 Running DiffDock on Illinois Computes Research Notebooks is a good fit for

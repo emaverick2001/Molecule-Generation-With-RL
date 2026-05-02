@@ -36,6 +36,16 @@ generation:
   # Enable confidence-based re-ranking of generated poses.
   use_confidence_reranking: true
 
+reranking:
+  # Use "confidence_score" once DiffDock confidence values are present in
+  # generated_samples_manifest.json. Use "rewards_csv" for offline reranking
+  # from an existing rewards.csv artifact.
+  reward_source: confidence_score
+  confidence_transform: identity
+  confidence_temperature: 1.0
+  descending: true
+  tie_breaker: sample_id
+
 evaluation:
   # Pose is considered successful if RMSD <= threshold (Å).
   rmsd_threshold: 2.0
