@@ -150,39 +150,52 @@ def _simple_centroid(mol: SimpleMol) -> tuple[float, float, float]:
     )
 
 
+def count_sdf_atoms(path: str | Path, remove_hs: bool = True) -> int:
+    mol = load_single_sdf(path)
+
+    if Chem is None:
+        if remove_hs:
+            mol = _remove_hydrogens_simple(mol)
+
+        return len(mol.atoms)
+
+    if remove_hs:
+        mol = Chem.RemoveHs(mol)
+
+    return int(mol.GetNumAtoms())
+
+
+def compute_sdf_centroid(
+    path: str | Path,
+    remove_hs: bool = True,
+) -> tuple[float, float, float]:
+    mol = load_single_sdf(path)
+
+    if Chem is None:
+        if remove_hs:
+            mol = _remove_hydrogens_simple(mol)
+
+        return _simple_centroid(mol)
+
+    if remove_hs:
+        mol = Chem.RemoveHs(mol)
+
+    conformer = mol.GetConformer()
+
+    return tuple(
+        sum(conformer.GetAtomPosition(i)[axis] for i in range(mol.GetNumAtoms()))
+        / mol.GetNumAtoms()
+        for axis in range(3)
+    )
+
+
 def compute_centroid_distance(
     predicted_pose_path: str | Path,
     reference_pose_path: str | Path,
     remove_hs: bool = True,
 ) -> float:
-    predicted = load_single_sdf(predicted_pose_path)
-    reference = load_single_sdf(reference_pose_path)
-
-    if Chem is None:
-        if remove_hs:
-            predicted = _remove_hydrogens_simple(predicted)
-            reference = _remove_hydrogens_simple(reference)
-
-        predicted_centroid = _simple_centroid(predicted)
-        reference_centroid = _simple_centroid(reference)
-    else:
-        if remove_hs:
-            predicted = Chem.RemoveHs(predicted)
-            reference = Chem.RemoveHs(reference)
-
-        predicted_conformer = predicted.GetConformer()
-        reference_conformer = reference.GetConformer()
-
-        predicted_centroid = tuple(
-            sum(predicted_conformer.GetAtomPosition(i)[axis] for i in range(predicted.GetNumAtoms()))
-            / predicted.GetNumAtoms()
-            for axis in range(3)
-        )
-        reference_centroid = tuple(
-            sum(reference_conformer.GetAtomPosition(i)[axis] for i in range(reference.GetNumAtoms()))
-            / reference.GetNumAtoms()
-            for axis in range(3)
-        )
+    predicted_centroid = compute_sdf_centroid(predicted_pose_path, remove_hs=remove_hs)
+    reference_centroid = compute_sdf_centroid(reference_pose_path, remove_hs=remove_hs)
 
     return sqrt(
         sum(

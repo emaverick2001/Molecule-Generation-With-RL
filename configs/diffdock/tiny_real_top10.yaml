@@ -1,9 +1,9 @@
-# Five-complex real DiffDock inference run over a tiny real PDBBind manifest.
+# Five-complex real DiffDock inference run with 10 samples per complex.
 
 experiment:
   name: diffdock_tiny_real
   model: diffdock
-  mode: tiny_real_baseline
+  mode: tiny_real_top10_baseline
   seed: 42
 
 dataset:
@@ -16,13 +16,13 @@ evaluation:
 
 generation:
   backend: diffdock
-  num_samples: 1
+  num_samples: 10
   use_confidence_reranking: false
 
 diffdock:
   repo_dir: external/DiffDock
   config_path: external/DiffDock/default_inference_args.yaml
-  timeout_seconds: 900
+  timeout_seconds: 1800
   preflight_filter:
     enabled: true
     remove_hs: true

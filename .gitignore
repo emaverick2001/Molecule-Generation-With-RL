@@ -1,6 +1,7 @@
 # Ignore all generated experiment outputs
 artifacts/
 data/
+packaged_runs/
 
 # Local third-party model checkouts. Install with scripts/setup_diffdock.sh.
 external/

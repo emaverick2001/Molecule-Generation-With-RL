@@ -9,6 +9,7 @@ from src.evaluation.metrics import (
     load_pose_metrics_csv,
     save_pose_metrics_csv,
 )
+from src.pipeline.run_evaluation import build_negative_rmsd_reward_records
 from src.utils.schemas import ComplexInput, GeneratedPose
 
 
@@ -129,3 +130,17 @@ def test_pose_metrics_csv_roundtrip(tmp_path):
 
     assert loaded == records
     assert Path(path).is_file()
+
+
+def test_build_negative_rmsd_reward_records_uses_real_pose_metrics():
+    records = [
+        _metric("1abc", 0, 3.25),
+        _metric("2xyz", 0, None, valid=False),
+    ]
+
+    rewards = build_negative_rmsd_reward_records(records)
+
+    assert len(rewards) == 1
+    assert rewards[0].complex_id == "1abc"
+    assert rewards[0].reward == -3.25
+    assert rewards[0].reward_type == "negative_rmsd"

@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from src.evaluation.metrics import (
+    PoseMetricRecord,
     aggregate_topk_metrics,
     evaluate_generated_poses,
     save_pose_metrics_csv,
 )
-from src.utils.artifact_logger import read_json, save_json, save_text
+from src.utils.artifact_logger import read_json, save_csv, save_json, save_text
 from src.utils.config import load_experiment_config
-from src.utils.schemas import ComplexInput, GeneratedPose
+from src.utils.schemas import ComplexInput, GeneratedPose, RewardRecord
 
 
 def _load_input_records(path: str | Path) -> list[ComplexInput]:
@@ -37,6 +38,22 @@ def _get_evaluation_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_negative_rmsd_reward_records(
+    metric_records: list[PoseMetricRecord],
+) -> list[RewardRecord]:
+    return [
+        RewardRecord(
+            complex_id=record.complex_id,
+            sample_id=record.sample_id,
+            reward=-float(record.rmsd),
+            reward_type="negative_rmsd",
+            valid=True,
+        )
+        for record in metric_records
+        if record.valid and record.rmsd is not None
+    ]
+
+
 def run_evaluation(
     input_manifest_path: str | Path,
     generated_manifest_path: str | Path,
@@ -44,6 +61,7 @@ def run_evaluation(
     metrics_path: str | Path,
     summary_path: str | Path,
     config: dict[str, Any],
+    rewards_path: str | Path | None = None,
 ) -> dict[str, Any]:
     evaluation_config = _get_evaluation_config(config)
     input_records = _load_input_records(input_manifest_path)
@@ -70,6 +88,23 @@ def run_evaluation(
     }
 
     save_pose_metrics_csv(pose_metric_records, pose_metrics_path)
+    reward_records = build_negative_rmsd_reward_records(pose_metric_records)
+
+    if rewards_path is not None:
+        rewards_path = Path(rewards_path)
+        if reward_records:
+            save_csv(
+                [record.to_dict() for record in reward_records],
+                rewards_path,
+            )
+        elif rewards_path.exists():
+            rewards_path.unlink()
+
+    metrics["reward_records"] = {
+        "path": str(rewards_path) if rewards_path is not None else None,
+        "reward_type": "negative_rmsd",
+        "num_records": len(reward_records),
+    }
     save_json(metrics, metrics_path)
     save_text(
         (
@@ -142,6 +177,7 @@ def main() -> None:
         metrics_path=run_dir / "metrics.json",
         summary_path=run_dir / "evaluation_summary.md",
         config=config,
+        rewards_path=run_dir / "rewards.csv",
     )
 
     print(f"Evaluation complete: {run_dir}")

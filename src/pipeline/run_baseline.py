@@ -7,11 +7,13 @@ from collections import Counter
 from pathlib import Path
 
 from src.data.loaders import load_complex_manifest
+from src.data.structure_checks import filter_complexes_by_preflight
 from src.data.validation import EXPECTED_EXTENSIONS, validate_manifest_records
 from src.generation.dry_run_generator import generate_dry_run_poses
 from src.generation.generate_diffdock import generate_diffdock_poses
 from src.utils.artifact_logger import save_csv, save_json, save_records_json, save_text
 from src.utils.config import load_experiment_config
+from src.utils.error_logger import append_error
 from src.utils.run_logger import get_artifact_paths, initialize_run
 from src.utils.schemas import ComplexInput, GeneratedPose, MetricRecord, RewardRecord
 from src.utils.seeds import set_seed
@@ -53,8 +55,51 @@ def generate_baseline_poses(
     if backend == "diffdock":
         diffdock_config = config["diffdock"]
         error_handling_config = config.get("error_handling", {})
+        preflight_config = diffdock_config.get("preflight_filter", {})
+        generation_records = complexes
+
+        if preflight_config.get("enabled", False):
+            generation_records, preflight_results = filter_complexes_by_preflight(
+                complexes,
+                remove_hs=preflight_config.get("remove_hs", True),
+                min_protein_atoms=preflight_config.get("min_protein_atoms", 1),
+                min_protein_residues=preflight_config.get("min_protein_residues", 1),
+                min_protein_chains=preflight_config.get("min_protein_chains", 1),
+                max_ligand_protein_centroid_distance=preflight_config.get(
+                    "max_ligand_protein_centroid_distance",
+                    80.0,
+                ),
+                max_input_reference_centroid_distance=preflight_config.get(
+                    "max_input_reference_centroid_distance",
+                    2.0,
+                ),
+                fail_on_unsupported_residues=preflight_config.get(
+                    "fail_on_unsupported_residues",
+                    False,
+                ),
+            )
+            save_json(
+                [result.to_dict() for result in preflight_results],
+                run_dir / "preflight_report.json",
+            )
+
+            for result in preflight_results:
+                if not result.valid:
+                    append_error(
+                        run_dir / "errors.log",
+                        "Skipping complex after DiffDock preflight validation.",
+                        context={
+                            "stage": "diffdock_preflight",
+                            "complex_id": result.complex_id,
+                            "reasons": "; ".join(result.reasons),
+                        },
+                    )
+
+            if not generation_records:
+                raise ValueError("DiffDock preflight filtered out every complex.")
+
         return generate_diffdock_poses(
-            records=complexes,
+            records=generation_records,
             output_dir=run_dir / "generated_samples",
             num_samples=num_samples,
             command_template=diffdock_config["command_template"],
@@ -102,6 +147,7 @@ def run_baseline_dry_run(
         complexes=complexes,
         run_dir=run_dir,
     )
+    backend = config["generation"].get("backend", "dry_run")
     generated_complex_ids = {pose.complex_id for pose in generated_samples}
     successful_complexes = [
         complex_input
@@ -115,6 +161,23 @@ def run_baseline_dry_run(
     ]
     reward_records = []
     metric_records = []
+
+    if backend == "diffdock":
+        metrics = {
+            "stage": "generation",
+            "experiment_name": config["experiment"]["name"],
+            "mode": config["experiment"]["mode"],
+            "generation_backend": backend,
+            "dataset_manifest": config["dataset"]["manifest_path"],
+            "num_requested_complexes": len(complexes),
+            "num_complexes": len(successful_complexes),
+            "num_successful_complexes": len(successful_complexes),
+            "num_failed_complexes": len(failed_complex_ids),
+            "failed_complex_ids": failed_complex_ids,
+            "num_generated_samples": len(generated_samples),
+            "aggregate": {},
+        }
+        return generated_samples, reward_records, metrics
 
     for complex_index, complex_input in enumerate(successful_complexes):
         top1_rmsd = round(1.5 + (0.1 * complex_index), 3)
@@ -243,10 +306,11 @@ def main() -> None:
         artifact_paths["generated_samples"],
     )
 
-    save_csv(
-        [record.to_dict() for record in reward_records],
-        artifact_paths["rewards"],
-    )
+    if reward_records:
+        save_csv(
+            [record.to_dict() for record in reward_records],
+            artifact_paths["rewards"],
+        )
 
     save_json(
         metrics,

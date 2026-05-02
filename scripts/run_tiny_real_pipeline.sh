@@ -11,8 +11,10 @@ Options:
   --num-complexes N         Number of complexes to sample. Default: 5
   --seed N                  Random seed. Default: 42
   --output-root DIR         Normalized real complex root. Default: data/raw/pdbbind_real
+  --baseline-config PATH    Baseline config. Default: configs/diffdock/tiny_real.yaml
   --package-mode MODE       key or full. Default: key
   --package-output-dir DIR  Output dir for packaged archive. Default: packaged_runs
+  --include-inputs          Include input protein/ligand/reference structures in package
   --skip-package           Run generation/evaluation without packaging artifacts
   -h, --help               Show this help message
 
@@ -28,9 +30,11 @@ SOURCE="data/raw/pdbbind/P-L"
 NUM_COMPLEXES="5"
 SEED="42"
 OUTPUT_ROOT="data/raw/pdbbind_real"
+BASELINE_CONFIG="configs/diffdock/tiny_real.yaml"
 PACKAGE_MODE="key"
 PACKAGE_OUTPUT_DIR="packaged_runs"
 SKIP_PACKAGE="false"
+INCLUDE_INPUTS="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_ROOT="$2"
       shift 2
       ;;
+    --baseline-config)
+      BASELINE_CONFIG="$2"
+      shift 2
+      ;;
     --package-mode)
       PACKAGE_MODE="$2"
       shift 2
@@ -57,6 +65,10 @@ while [[ $# -gt 0 ]]; do
     --package-output-dir)
       PACKAGE_OUTPUT_DIR="$2"
       shift 2
+      ;;
+    --include-inputs)
+      INCLUDE_INPUTS="true"
+      shift
       ;;
     --skip-package)
       SKIP_PACKAGE="true"
@@ -101,7 +113,8 @@ RUNS_AFTER="$(mktemp)"
 find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_BEFORE" 2>/dev/null || true
 
 echo "==> Running DiffDock tiny real baseline"
-./scripts/run_diffdock_tiny_real.sh
+uv run python -m src.pipeline.run_baseline \
+  --config "$BASELINE_CONFIG"
 
 find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_AFTER"
 
@@ -125,10 +138,17 @@ echo "==> Running evaluation"
 
 if [[ "$SKIP_PACKAGE" == "false" ]]; then
   echo "==> Packaging run artifacts"
-  ./scripts/package_run_artifacts.sh \
-    "$NEW_RUN_DIR" \
-    "--$PACKAGE_MODE" \
+  PACKAGE_ARGS=(
+    "$NEW_RUN_DIR"
+    "--$PACKAGE_MODE"
     --output-dir "$PACKAGE_OUTPUT_DIR"
+  )
+
+  if [[ "$INCLUDE_INPUTS" == "true" ]]; then
+    PACKAGE_ARGS+=(--include-inputs)
+  fi
+
+  ./scripts/package_run_artifacts.sh "${PACKAGE_ARGS[@]}"
 fi
 
 echo "==> Tiny real pipeline complete"
