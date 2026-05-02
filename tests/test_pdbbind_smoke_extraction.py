@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 
 from scripts.extract_pdbbind_smoke_complex import extract_smoke_complex
 
@@ -45,3 +47,41 @@ $$$$
             "split": "smoke",
         }
     ]
+
+
+def test_extract_smoke_complex_script_bootstraps_project_imports(tmp_path):
+    source_root = tmp_path / "pdbbind_refined"
+    complex_dir = source_root / "1a30"
+    complex_dir.mkdir(parents=True)
+    (complex_dir / "1a30_protein.pdb").write_text("HEADER real protein\n", encoding="utf-8")
+    (complex_dir / "1a30_ligand.sdf").write_text(
+        """RealLigand
+  PDBBind
+
+  1  0  0  0  0  0            999 V2000
+    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+M  END
+$$$$
+""",
+        encoding="utf-8",
+    )
+    output_root = tmp_path / "output" / "pdbbind_real"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/extract_pdbbind_smoke_complex.py",
+            "--source",
+            str(source_root),
+            "--complex-id",
+            "1a30",
+            "--output-root",
+            str(output_root),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Extracted real PDBBind smoke complex" in result.stdout
+    assert (output_root / "1a30" / "protein.pdb").is_file()

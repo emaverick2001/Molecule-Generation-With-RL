@@ -3,10 +3,15 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.manifests import build_and_save_manifest
 from src.data.validation import validate_manifest_file
@@ -189,7 +194,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    os.chdir(Path(__file__).resolve().parents[1])
+    os.chdir(PROJECT_ROOT)
 
     output_dir = extract_smoke_complex(
         source=Path(args.source),
