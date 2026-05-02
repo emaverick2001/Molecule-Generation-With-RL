@@ -202,8 +202,25 @@ SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_diffdock_smoke.sh
 
 ## Build A Tiny Real Split
 
-After the one-complex smoke test works, create a repeatable tiny real split from
-selected PDBBind IDs:
+After the one-complex smoke test works, create a repeatable tiny real split by
+randomly sampling selected PDBBind IDs:
+
+```bash
+uv run python scripts/create_tiny_real_pdbbind.py \
+  --random \
+  --num-complexes 5 \
+  --seed 42
+```
+
+By default this samples from:
+
+```text
+data/raw/pdbbind/P-L
+```
+
+Use `--source` if your extracted PDBBind package lives elsewhere.
+
+You can also choose IDs manually:
 
 ```bash
 uv run python scripts/create_tiny_real_pdbbind.py \
@@ -250,6 +267,15 @@ Then evaluate:
 
 ```bash
 ./scripts/run_evaluation.sh artifacts/runs/<new_run_id>
+```
+
+Or run the tiny-real generation, evaluation, and artifact packaging pipeline in
+one command:
+
+```bash
+./scripts/run_tiny_real_pipeline.sh \
+  --num-complexes 5 \
+  --seed 42
 ```
 
 ## Package Run Artifacts For Download

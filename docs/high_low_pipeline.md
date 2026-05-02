@@ -517,9 +517,10 @@ example_input = {
 		- `scripts/create_tiny_real_pdbbind.py`
 		- `configs/diffdock/tiny_real.yaml`
 		- `scripts/run_diffdock_tiny_real.sh`
+		- `scripts/run_tiny_real_pipeline.sh`
 		- Inputs:
 			- extracted real PDBBind source root
-			- five selected complex IDs
+			- five selected complex IDs, or random sampling with a fixed seed
 		- Outputs:
 			- `data/raw/pdbbind_real/{complex_id}/protein.pdb`
 			- `data/raw/pdbbind_real/{complex_id}/ligand.sdf`

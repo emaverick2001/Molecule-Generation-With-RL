@@ -2,7 +2,11 @@ import json
 import subprocess
 import sys
 
-from scripts.create_tiny_real_pdbbind import create_tiny_real_pdbbind
+from scripts.create_tiny_real_pdbbind import (
+    create_tiny_real_pdbbind,
+    discover_complex_ids,
+    sample_complex_ids,
+)
 
 
 def _write_complex(root, complex_id):
@@ -97,3 +101,54 @@ def test_create_tiny_real_pdbbind_script_accepts_ids_file(tmp_path):
     assert "Prepared 2 real PDBBind complexes" in result.stdout
     assert (output_root / "1a30" / "protein.pdb").is_file()
     assert (output_root / "2xyz" / "protein.pdb").is_file()
+
+
+def test_discover_and_sample_complex_ids_are_deterministic(tmp_path):
+    source = tmp_path / "pdbbind"
+    for complex_id in ["1a30", "2xyz", "3def", "4ghi", "5jkl", "6mno"]:
+        _write_complex(source, complex_id)
+
+    assert discover_complex_ids(source) == [
+        "1a30",
+        "2xyz",
+        "3def",
+        "4ghi",
+        "5jkl",
+        "6mno",
+    ]
+    assert sample_complex_ids(source, sample_size=3, seed=7) == sample_complex_ids(
+        source,
+        sample_size=3,
+        seed=7,
+    )
+
+
+def test_create_tiny_real_pdbbind_script_can_randomly_sample(tmp_path):
+    source = tmp_path / "pdbbind"
+    for complex_id in ["1a30", "2xyz", "3def", "4ghi", "5jkl", "6mno"]:
+        _write_complex(source, complex_id)
+
+    output_root = tmp_path / "output" / "pdbbind_real"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/create_tiny_real_pdbbind.py",
+            "--source",
+            str(source),
+            "--random",
+            "--num-complexes",
+            "5",
+            "--seed",
+            "42",
+            "--output-root",
+            str(output_root),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Selected complex IDs" in result.stdout
+    assert "Prepared 5 real PDBBind complexes" in result.stdout
+    assert len(list(output_root.iterdir())) == 5
