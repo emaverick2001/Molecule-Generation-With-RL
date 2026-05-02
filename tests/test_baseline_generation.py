@@ -189,6 +189,44 @@ def test_generate_diffdock_poses_raises_when_outputs_are_missing(tmp_path):
     assert "only_pose.sdf" in message
 
 
+def test_generate_diffdock_poses_can_skip_failed_complexes(tmp_path):
+    records = _records()
+
+    def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
+        output_dir = Path(command[command.index("--out") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if output_dir.name == "1abc":
+            (output_dir / "rank1_confidence-0.42.sdf").write_text(
+                "pose\n",
+                encoding="utf-8",
+            )
+        else:
+            (output_dir / "complex_0").mkdir()
+
+    error_log_path = tmp_path / "errors.log"
+
+    generated = generate_diffdock_poses(
+        records=records,
+        output_dir=tmp_path / "generated_samples",
+        num_samples=1,
+        command_template=["diffdock", "--out", "{raw_output_dir}"],
+        repo_dir=tmp_path,
+        runner=fake_runner,
+        skip_failed_complexes=True,
+        errors_log_path=error_log_path,
+    )
+
+    assert len(generated) == 1
+    assert generated[0].complex_id == "1abc"
+    assert generated[0].confidence_score == -0.42
+
+    error_log = error_log_path.read_text(encoding="utf-8")
+
+    assert "2xyz" in error_log
+    assert "DiffDock produced 0 parseable ranked SDF files" in error_log
+
+
 def test_generate_diffdock_poses_discovers_recursive_sdf_outputs(tmp_path):
     def fake_runner(command, cwd, stdout_path, stderr_path, timeout_seconds):
         output_dir = Path(command[command.index("--out") + 1])

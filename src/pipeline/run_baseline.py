@@ -52,6 +52,7 @@ def generate_baseline_poses(
 
     if backend == "diffdock":
         diffdock_config = config["diffdock"]
+        error_handling_config = config.get("error_handling", {})
         return generate_diffdock_poses(
             records=complexes,
             output_dir=run_dir / "generated_samples",
@@ -62,6 +63,14 @@ def generate_baseline_poses(
             config_path=diffdock_config["config_path"],
             log_dir=run_dir / "logs",
             timeout_seconds=diffdock_config.get("timeout_seconds"),
+            skip_failed_complexes=error_handling_config.get(
+                "skip_invalid_samples",
+                False,
+            ),
+            errors_log_path=run_dir / "errors.log",
+            max_failed_complexes=error_handling_config.get(
+                "max_failed_samples_before_stop"
+            ),
         )
 
     raise ValueError(f"Unsupported generation backend: {backend}")
@@ -93,10 +102,21 @@ def run_baseline_dry_run(
         complexes=complexes,
         run_dir=run_dir,
     )
+    generated_complex_ids = {pose.complex_id for pose in generated_samples}
+    successful_complexes = [
+        complex_input
+        for complex_input in complexes
+        if complex_input.complex_id in generated_complex_ids
+    ]
+    failed_complex_ids = [
+        complex_input.complex_id
+        for complex_input in complexes
+        if complex_input.complex_id not in generated_complex_ids
+    ]
     reward_records = []
     metric_records = []
 
-    for complex_index, complex_input in enumerate(complexes):
+    for complex_index, complex_input in enumerate(successful_complexes):
         top1_rmsd = round(1.5 + (0.1 * complex_index), 3)
 
         metric_records.append(
@@ -141,7 +161,11 @@ def run_baseline_dry_run(
         "mode": config["experiment"]["mode"],
         "generation_backend": config["generation"].get("backend", "dry_run"),
         "dataset_manifest": config["dataset"]["manifest_path"],
+        "num_requested_complexes": len(complexes),
         "num_complexes": len(metric_records),
+        "num_successful_complexes": len(successful_complexes),
+        "num_failed_complexes": len(failed_complex_ids),
+        "failed_complex_ids": failed_complex_ids,
         "num_generated_samples": len(generated_samples),
         "per_complex": [record.to_dict() for record in metric_records],
         "aggregate": {

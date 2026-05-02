@@ -22,6 +22,7 @@ import re
 from typing import Any
 
 from src.generation.contract import validate_generated_pose_records
+from src.utils.error_logger import append_exception
 from src.utils.schemas import ComplexInput, GeneratedPose
 
 
@@ -305,6 +306,9 @@ def generate_diffdock_poses(
     log_dir: str | Path | None = None,
     timeout_seconds: int | None = None,
     runner: Runner = run_diffdock_command,
+    skip_failed_complexes: bool = False,
+    errors_log_path: str | Path | None = None,
+    max_failed_complexes: int | None = None,
 ) -> list[GeneratedPose]:
     """
     Run DiffDock once per complex and return standardized pose records.
@@ -347,6 +351,7 @@ def generate_diffdock_poses(
     log_root.mkdir(parents=True, exist_ok=True)
 
     generated: list[GeneratedPose] = []
+    failed_complexes: list[str] = []
 
     for record in records:
         complex_raw_output_dir = raw_output_root / record.complex_id
@@ -361,25 +366,61 @@ def generate_diffdock_poses(
             config_path=resolved_config_path,
         )
 
-        runner(
-            command=command,
-            cwd=resolved_repo_dir,
-            stdout_path=log_root / f"{record.complex_id}.stdout.log",
-            stderr_path=log_root / f"{record.complex_id}.stderr.log",
-            timeout_seconds=timeout_seconds,
-        )
-
-        generated.extend(
-            _standardize_diffdock_outputs(
-                record=record,
-                raw_output_dir=complex_raw_output_dir,
-                output_dir=output_dir,
-                num_samples=num_samples,
+        try:
+            runner(
+                command=command,
+                cwd=resolved_repo_dir,
+                stdout_path=log_root / f"{record.complex_id}.stdout.log",
+                stderr_path=log_root / f"{record.complex_id}.stderr.log",
+                timeout_seconds=timeout_seconds,
             )
-        )
+
+            generated.extend(
+                _standardize_diffdock_outputs(
+                    record=record,
+                    raw_output_dir=complex_raw_output_dir,
+                    output_dir=output_dir,
+                    num_samples=num_samples,
+                )
+            )
+        except (RuntimeError, TimeoutError, FileNotFoundError, ValueError) as error:
+            if not skip_failed_complexes:
+                raise
+
+            failed_complexes.append(record.complex_id)
+
+            if errors_log_path is not None:
+                append_exception(
+                    errors_log_path,
+                    error,
+                    context={
+                        "stage": "diffdock_generation",
+                        "complex_id": record.complex_id,
+                        "raw_output_dir": complex_raw_output_dir,
+                        "stdout_log": log_root / f"{record.complex_id}.stdout.log",
+                        "stderr_log": log_root / f"{record.complex_id}.stderr.log",
+                    },
+                )
+
+            if (
+                max_failed_complexes is not None
+                and len(failed_complexes) >= max_failed_complexes
+            ):
+                raise RuntimeError(
+                    f"Stopped after {len(failed_complexes)} failed DiffDock "
+                    f"complexes: {', '.join(failed_complexes)}"
+                ) from error
+
+    if not generated:
+        raise RuntimeError("DiffDock did not generate any poses.")
+
+    successful_complex_ids = {pose.complex_id for pose in generated}
+    successful_records = [
+        record for record in records if record.complex_id in successful_complex_ids
+    ]
 
     validate_generated_pose_records(
-        records=records,
+        records=successful_records,
         generated=generated,
         num_samples=num_samples,
         output_dir=output_dir,
