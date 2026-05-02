@@ -1,28 +1,14 @@
-### ==**System Design (WHAT is built)**==
-- Describe the **architecture of your system**
-- Define:
-    - components
-    - dataflow
-    - interactions
-- **Output of this section should be:**
-	- A **clear system architecture + pipeline**
----
 #### **High-Level Pipeline + Low-level Pipeline**
 - Describe the system as a sequence of stages
 - Remember to first create most simplistic working system then build ontop of it
+- 
 1. First high-level then low-level
 	1. for high-level mention the core data manipulations + actions + key system components + deliverables for respective section
 	2. for low-level mention key datastructures + key artifact logging plan + implementation details to key components/deliverables for respective section so that you can implement the simplistic working system
 	3. Once MVP is built add more details, optimizations, etc
 	4. Optionally later on mention run artifacts produced + what datapoints to log
 ---
-##### **Dataflow Example + End-to-end pipeline**
-- Step-by-step system execution:
-- Example:
-	1. Input is received
-	2. Features are computed
-	3. Decision is made
-	4. Output is produced
+##### **Dataflow Example**
 ---
 - Input: protein–ligand complex
 - Output: generated docking poses + reward scores + RMSD metrics
@@ -35,16 +21,6 @@ example_input = {
     "split": "test"  
 }
 ```
-- **Pipeline**
-	1. Load protein–ligand complex
-	2. Run pretrained DiffDock
-	3. Generate N candidate poses
-	4. Score poses using confidence model / reward function
-	5. Compute RMSD against ground truth
-	6. Save outputs + metrics
-	7. Run reward-based post-training
-	8. Re-generate poses with post-trained model
-	9. Compare baseline vs post-trained model
 ##### **0. Setup** 
 ###### **Key Components / Deliverables**
 1. local code environment setup 
@@ -157,6 +133,7 @@ example_input = {
 			- run_all.sh
 	2. Follow [[Software Implementation Guide]] until 2. Working on the Frontend or 3. Working on the Backend
 ##### **1. Dataset Loading + Processing
+- Load protein–ligand complex
 ###### **Key Components / Deliverables**
 0. Write a manifest builder
 	- Create a reusable utility that scans a small PDBBind-style dataset folder and produces a standardized JSON manifest. The manifest becomes the single source of truth for downstream pipeline stages such as baseline generation, reward filtering, evaluation, and post-training.
@@ -343,10 +320,17 @@ example_input = {
 		```
 	1. Create Mini Split File
 	2. Create Tiny Dataset Builder Script
+	3. Run the Dataset Builder
+	4. Build the Manifest
+	5. Validate the Mini Manifest
+	6. Update `configs/diffdock/baseline.yaml` for the Mini Dataset
+	7. Modify `run_baseline.py` to Use the Manifest
 ##### **2. Baseline Generation**
+- Run pretrained DiffDock and Generate N candidate poses
 ###### **Key Components / Deliverables**
 0. Define the Baseline Generation Contract
 	- Decide what baseline generation must produce for each complex.
+	- [[DiffDock]]
 1. **Create the Generation Interface**
 	1. Create src/generation/dry_run_generator.py
 		- generate fake pose records from real manifest-loaded complexes
@@ -406,14 +390,6 @@ example_input = {
 				- Return a list of `GeneratedPose` records.
 				- Validate the output contract using `validate_generated_pose_records`.
 6. Implement Actual DiffDock Inference 
-	- Implementation status: the pipeline now supports a real `diffdock` generation backend while preserving the dry-run backend for local plumbing tests.
-	- Code entry points:
-		- `src/generation/generate_diffdock.py`
-		- `src/pipeline/run_baseline.py`
-		- `configs/diffdock/smoke.yaml`
-		- `configs/diffdock/tiny.yaml`
-		- `scripts/run_diffdock_smoke.sh`
-		- `scripts/run_diffdock_tiny.sh`
 	1. Add a DiffDock backend config
 		```
 		generation:
@@ -444,13 +420,13 @@ example_input = {
 		```
 		- Important correction: newer DiffDock `inference.py` uses `--ligand_description`, not just `--ligand`, based on the current parser.
 	2. Add a preflight check before running DiffDock 
-		1. Implemented as `preflight_diffdock_generation(...)` in `src/generation/generate_diffdock.py`.
+		1. Create a helper in `src/generation/generate_diffdock.py` or `src/generation/diffdock_preflight.py`.
 			- Check 
 				1. external/DiffDock exists  
 				2. default_inference_args.yaml exists  
 				3. manifest paths exist  
 				4. protein files are .pdb  
-					5. ligand files are .sdf  
+				5. ligand files are .sdf or RDKit-readable  
 				6. python command can run  
 				7. generation.num_samples > 0
 	3. Make the subprocess run inside the DiffDock repo
@@ -469,7 +445,7 @@ example_input = {
 			- ligand_path  
 			- raw_output_dir  
 			- config_path
-	4. Update command formatting to support DiffDock placeholders
+	4. Update `format_command_template` to support DiffDock placeholders
 		```
 		{complex_id}
 		{protein_path}
@@ -480,7 +456,6 @@ example_input = {
 		{config_path}
 		{repo_dir}
 		```
-		- `generate_diffdock_poses(...)` passes absolute paths into DiffDock for protein, ligand, ground-truth ligand, config, repo, and raw output paths.
 	5. Implement `run_diffdock_command(..., cwd=repo_dir)`
 		- run command  
 		- write stdout log  
@@ -488,10 +463,9 @@ example_input = {
 		- raise RuntimeError if return code != 0  
 		- raise TimeoutError if timeout occurs
 		- Each complex should get logs like:
-			- `artifacts/runs/{run_id}/logs/1abc.stdout.log`
-			- `artifacts/runs/{run_id}/logs/1abc.stderr.log`
+			- artifacts/runs/{run_id}/logs/1abc.stdout.logartifacts/runs/{run_id}/logs/1abc.stderr.log
 	6. Discover DiffDock-generated SDF outputs
-		- After each DiffDock run, the wrapper searches:
+		- After each DiffDock run, Codex should search:
 			- artifacts/runs/{run_id}/raw_diffdock_outputs/{complex_id}/
 		- for:
 			- *.sdf
@@ -519,11 +493,7 @@ example_input = {
 			]
 			```
 	8. Add the backend switch in `run_baseline.py`
-		- Implemented via `generation.backend`.
-		- Supported values:
-			- `dry_run`
-			- `diffdock`
-		- The dataset loader, artifact writers, reward placeholder, and metrics placeholder do not need to know which generation backend produced the poses.
+		- add the ability to switch between diffdock and dry_run as configurations for the run_baseline.py 
 	9. Start with one complex before running all 5–10
 		1. Create a debug split data/processed/diffdock/splits/smoke.txt with one complex ID
 		2. Create data/processed/diffdock/manifests/smoke_manifest.json
@@ -538,15 +508,8 @@ example_input = {
 			  backend: diffdock
 			  num_samples: 1
 			```
-	10. Add a script for real DiffDock baseline `scripts/run_diffdock_smoke.sh`
-		- Creates the tiny local dataset.
-		- Builds a one-complex smoke manifest.
-		- Runs `src.pipeline.run_baseline` with `configs/diffdock/smoke.yaml`.
-		- Requires `external/DiffDock` and `external/DiffDock/default_inference_args.yaml`.
-	11. Add a script to test more complexes (5-10 complex mini manifest) `scripts/run_diffdock_tiny.sh`
-		- Creates the tiny local dataset.
-		- Runs `src.pipeline.run_baseline` with `configs/diffdock/tiny.yaml`.
-		- Requires `external/DiffDock` and `external/DiffDock/default_inference_args.yaml`.
+	10. Add a script for real DiffDock baseline scripts/run_diffdock_smoke.sh
+	11. Add a script to test more complexes (5-10 complex mini manifest) scripts/run_diffdock_tiny.sh
 	12. Completion Criteria 
 		1. `run_baseline.py` loads the mini manifest  
 		2. it creates generated sample records for every complex  
@@ -569,48 +532,239 @@ example_input = {
 			generated_samples_manifest.json
 			summary.md
 			```
-		9. Next steps:
-			- Install or clone DiffDock into `external/DiffDock`.
-			- Verify the command template against the exact DiffDock version in that checkout.
-			- Replace simulated RMSD/reward values with real RMSD evaluation in the Reward Scoring phase.
-##### **3. Reward Scoring**
+		9. Next steps 
+##### **3. Evaluation**
+- This phase evaluates generated poses against the ground-truth bound ligand pose using an **offline** metric. For the MVP, the core metric should be symmetry-aware ligand RMSD, with top-k success thresholds matching common DiffDock reporting conventions. The original DiffDock paper reports success at RMSD < 2 Å, and the current repository evaluator computes `rmsds_below_2`, `rmsds_below_5`, `top5_rmsds_below_2`, and `top10_rmsds_below_2`, along with centroid-distance summaries. 
+- RDKit’s documentation makes the intended RMSD choice clear. `SDMolSupplier` is the standard way to read SDF sets and should be checked for `None` values; `MolFromMolFile()` returns `None` on parse failure; and `rdMolAlign.CalcRMS()` is documented as useful for comparing docking poses and co-crystallized ligands because it computes RMSD in place without pre-aligning the probe to the reference. RDKit also warns that symmetry-aware matching can suffer combinatorial explosion when hydrogens are present. DiffDock’s own evaluator removes hydrogens before symmetry-aware RMSD and then reports RMSD, centroid-distance, and top-k summaries. That is the rationale for the default MVP design here: `CalcRMS`, symmetry-aware, `remove_hs=True`, and top-k aggregation at 2 Å and 5 Å.
+- Implementation status: the offline evaluation phase is implemented. It can evaluate any completed run directory that contains:
+	- `input_manifest.json`
+	- `generated_samples_manifest.json`
+	- generated SDF files referenced by the generated-samples manifest
+- Run command:
+	```bash
+	./scripts/run_evaluation.sh artifacts/runs/{run_id}
+	```
+- Outputs:
+	```text
+	artifacts/runs/{run_id}/
+	├── pose_metrics.csv
+	├── metrics.json
+	└── evaluation_summary.md
+	```
+- Note: dry-run placeholder SDF files intentionally contain no atoms, so evaluation will emit invalid rows for dry-run generated poses. Real DiffDock SDF outputs should produce valid RMSD and centroid-distance rows.
 ###### **Key Components / Deliverables**
-8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-9. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
-##### **4. Evaluation**
+1. src/evaluation/__init__.py
+2. src/evaluation/rmsd.py
+	1. `load_single_sdf(...)`
+		```python
+		def load_single_sdf(path: Union[str, Path]) -> "Chem.Mol":
+		```
+		- use `Chem.SDMolSupplier(..., removeHs=False)`
+		- return exactly one non-`None` molecule
+		- raise:
+		    - `FileNotFoundError` if missing,
+		    - `ValueError` if no valid molecules found
+	2. `compute_symmetry_corrected_rmsd(...)`
+		```python
+		def compute_symmetry_corrected_rmsd(
+		    predicted_pose_path: Union[str, Path],
+		    reference_pose_path: Union[str, Path],
+		    remove_hs: bool = True,
+		) -> float:
+		```
+		- load molecules
+		- optional `Chem.RemoveHs(...)`
+		- call `rdMolAlign.CalcRMS(pred, ref)`
+		- return float RMSD
+	3. `compute_centroid_distance(...)`
+		```python
+		def compute_centroid_distance(
+		    predicted_pose_path: Union[str, Path],
+		    reference_pose_path: Union[str, Path],
+		    remove_hs: bool = True,
+		) -> float:
+		```
+		- compute ligand-coordinate centroids
+		- return Euclidean distance
+3. src/evaluation/metrics.py
+	1. `evaluate_generated_poses(...)`
+		```python
+		def evaluate_generated_poses(
+		    input_records: list["ComplexInput"],
+		    generated_records: list["GeneratedPose"],
+		    rmsd_thresholds: tuple[float, float] = (2.0, 5.0),
+		    remove_hs: bool = True,
+		) -> list["PoseMetricRecord"]:
+		```
+		- build `complex_id -> ground_truth_pose_path` lookup from `input_records`
+		- compute one `PoseMetricRecord` per generated pose
+		- if a pose fails to load or compare:
+			- emit invalid row, do not crash the whole run
+	2. `aggregate_topk_metrics(...)`
+		```python
+		def aggregate_topk_metrics(
+		    metric_records: list["PoseMetricRecord"],
+		    top_k: list[int] = [1, 5, 10],
+		) -> dict[str, object]:
+		```
+		- group valid rows by `complex_id`
+		- sort within each complex by `rank`
+		- compute:
+		    - `num_complexes`
+		    - `num_valid_poses`
+		    - `num_invalid_poses`
+		    - `mean_rmsd`
+		    - `median_rmsd`
+		    - `success_at_1`
+		    - `success_at_5` if enough poses
+		    - `success_at_10` if enough poses
+		    - `best_of_n_mean_rmsd`
+	3. `save_pose_metrics_csv(...)`
+		```python
+		def save_pose_metrics_csv(
+		    records: list["PoseMetricRecord"],
+		    path: Union[str, Path],
+		) -> None:
+		```
+	4. `load_pose_metrics_csv(...)`
+	```python
+	def load_pose_metrics_csv(path: Union[str, Path]) -> list["PoseMetricRecord"]:
+	```
+4. src/pipeline/run_evaluation.py
+	- CLI entry point for offline evaluation:
+		```bash
+		uv run python -m src.pipeline.run_evaluation --run-dir artifacts/runs/{run_id}
+		```
+	- Loads run-local manifests.
+	- Computes per-pose metrics.
+	- Writes `pose_metrics.csv`.
+	- Writes aggregate `metrics.json`.
+	- Writes `evaluation_summary.md`.
+5. tests/test_rmsd.py
+	- identical SDFs produce RMSD ≈ 0
+	- moved conformer produces RMSD > 0
+	- invalid SDF path raises `FileNotFoundError`
+	- invalid SDF contents produce invalid metric row, not pipeline crash
+6. tests/test_reward_computation.py
+	- aggregation computes correct `success_at_1` / `success_at_5`
+	- top-k metrics are `None` when insufficient poses exist
+	- reranked records are evaluated in reranked order
+	- pose metric CSV artifacts can be saved and loaded
+7. scripts/run_evaluation.sh
+8. configs/diffdock/evaluation.yaml
+9. Completion Criteria
+	1. evaluation loads `input_manifest.json`
+	2. evaluation loads `generated_samples_manifest.json`
+	3. one `pose_metrics.csv` row is produced per generated pose
+	4. invalid poses are logged as invalid rows without crashing the run
+	5. `metrics.json` contains aggregate RMSD, centroid-distance, and success@k metrics
+	6. tests pass
+##### **4. Confidence Reranking****
+- This phase converts the per-pose DiffDock confidence signal into a run-local reward artifact that is downstream-friendly, reproducible, and separate from evaluation.
 ###### **Key Components / Deliverables**
-8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-9. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
-##### **5. Post-Training**
-###### **Key Components / Deliverables**
-8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-9. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
-##### **6. Post-Trained Generation**
+1. src/rewards/confidence_reward.py
+	1. require_confidence_scores(...)a
+		- raise `ValueError` if any pose has `confidence_score is None`.
+		```
+		def require_confidence_scores(poses: list["GeneratedPose"]) -> None:
+		```
+	2. transform_confidence_score(...)
+		- `identity` → return raw score
+		- `sigmoid` → `1 / (1 + exp(-score / temperature))`
+		- `centered_sigmoid` → `2 * sigmoid - 1`
+		- raise `ValueError` on unsupported mode
+		```
+		def transform_confidence_score(
+		    score: float,
+		    mode: str = "identity",
+		    temperature: float = 1.0,
+		) -> float:
+		```
+	3. score_poses_with_confidence(...)
+		```
+		def score_poses_with_confidence(
+		    poses: list["GeneratedPose"],
+		    transform: str = "identity",
+		    temperature: float = 1.0,
+		    invalid_policy: str = "raise",
+		) -> list["RewardRecord"]:
+		```
+		- iterate over generated poses
+		- if `confidence_score` is present:
+			- compute `reward`
+			- emit valid `RewardRecord`
+		- if missing:
+			- `invalid_policy == "raise"` → raise `ValueError`
+			- `invalid_policy == "mark_invalid"` → emit invalid row with `reward=None`
+	4. summarize_rewards(...)
+		```
+		def summarize_rewards(records: list["RewardRecord"]) -> dict[str, object]:
+		```
+
+	5. save_rewards_csv(...)
+		```
+		def save_rewards_csv(
+		    records: list["RewardRecord"],
+		    path: Union[str, Path],
+		) -> None:
+		```
+		- write deterministic CSV with header row
+		- create parent directories
+	6. load_rewards_csv(...)
+		```
+		def load_rewards_csv(path: Union[str, Path]) -> list["RewardRecord"]:
+		```
+		- read CSV
+		- coerce optional float/bool values
+		- return list of `RewardRecord`
+2. src/pipeline/run_reward_scoring.py
+3. tests/test_confidence_reward.py
+	- `   transform_confidence_score("identity")` returns raw value
+	- sigmoid transform is monotonic and bounded
+	- missing confidence with `invalid_policy="raise"` raises `ValueError`
+	- missing confidence with `invalid_policy="mark_invalid"` yields invalid rows
+	- scoring produces one `RewardRecord` per `GeneratedPose`
+	- CSV roundtrip works
+	- reward summary counts valid/invalid correctly
+4. scripts/run_reward_scoring.sh
+5. configs/diffdock/reward_scoring.yaml
+	```
+	experiment:
+	  name: diffdock_reward_scoring
+	  model: diffdock
+	  mode: reward_scoring
+	  seed: 42
+	
+	reward:
+	  enabled: true
+	  source: diffdock_confidence
+	  transform: identity
+	  temperature: 1.0
+	  invalid_policy: raise
+	```
+##### **5. Post-Training / RL Setup**
 ###### **Key Components / Deliverables**
 8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
 9. [key component name]
 	1. [steps to implement key component/ tests to run for validation]
 ##### **7. Comparison + Reporting**
+- Compare baseline vs post-trained model
 ###### **Key Components / Deliverables**
 1. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
 2. [key component name]
 	1. [steps to implement key component/ tests to run for validation]
-##### **After MVP: Extensions**
-###### **Extension 1: Better Reward Functions**
+##### **8. Extension 1: Better Reward Functions**
 - docking score
 - confidence score
 - energy-based score
 - composite reward
-###### **Extension 2: Inference-Time Guidance Baseline**
+##### **9. Extension 2: Inference-Time Guidance Baseline**
 - compare post-training vs sampling-time steering
-###### **Extension 3: PepFlow**
+##### **10. Extension 3: PepFlow**
 - repeat structure for:
     - known-backbone peptide design
     - full peptide generation
-###### **Extension 4: Diagnostics**
+##### **11. Extension 4: Diagnostics**
 - reward vs RMSD correlation
 - diversity preservation
 - failure cases

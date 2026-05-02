@@ -1,0 +1,14 @@
+# Offline DiffDock generated-pose evaluation config.
+
+experiment:
+  name: diffdock_evaluation
+  model: diffdock
+  mode: evaluation
+  seed: 42
+
+evaluation:
+  rmsd_threshold: 2.0
+  top_k: [1, 5, 10]
+  remove_hs: true
+  save_pose_metrics_csv: true
+  save_metrics_json: true
