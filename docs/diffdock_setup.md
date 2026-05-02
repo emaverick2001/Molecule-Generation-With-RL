@@ -156,12 +156,29 @@ registration/download approval. Download a protein-ligand package such as a
 refined/core/general set package, then use:
 
 ```bash
+uv run python scripts/setup_pdbbind_smoke_complex.py --complex-id <real_pdbbind_id>
+```
+
+The setup script searches common locations such as `~/datasets/pdbbind`,
+`~/datasets`, `~/Downloads`, and `data/downloads`. If it finds multiple
+candidates, it asks which one to use. If you already know the source path, pass
+it directly:
+
+```bash
+uv run python scripts/setup_pdbbind_smoke_complex.py \
+  --source /path/to/pdbbind_package_or_extracted_root \
+  --complex-id <real_pdbbind_id>
+```
+
+The lower-level extractor is also available:
+
+```bash
 uv run python scripts/extract_pdbbind_smoke_complex.py \
   --source /path/to/pdbbind_package_or_extracted_root \
   --complex-id <real_pdbbind_id>
 ```
 
-The script copies:
+Both scripts copy:
 
 ```text
 <complex_id>_protein.pdb -> data/raw/pdbbind_real/<complex_id>/protein.pdb

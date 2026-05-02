@@ -193,8 +193,7 @@ Real DiffDock smoke-test complexes should live under `data/raw/pdbbind_real/`.
 Use the extractor after downloading a PDBBind package:
 
 ```bash
-uv run python scripts/extract_pdbbind_smoke_complex.py \
-  --source /path/to/extracted_or_archived_pdbbind \
+uv run python scripts/setup_pdbbind_smoke_complex.py \
   --complex-id <real_pdbbind_id>
 ```
 
