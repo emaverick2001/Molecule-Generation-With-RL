@@ -81,13 +81,24 @@ if [[ -z "$OUTPUT_DIR" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
 
 RUN_NAME="$(basename "$RUN_DIR")"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 ARCHIVE_PATH="$OUTPUT_DIR/${RUN_NAME}_${MODE}_${TIMESTAMP}.tar.gz"
+STAGING_ROOT="$(mktemp -d)"
+cleanup() {
+  rm -rf "$STAGING_ROOT"
+}
+trap cleanup EXIT
+
+STAGED_RUN_PARENT="$STAGING_ROOT/$(dirname "$RUN_DIR")"
+STAGED_RUN_DIR="$STAGING_ROOT/$RUN_DIR"
+mkdir -p "$STAGED_RUN_PARENT"
 
 if [[ "$MODE" == "full" ]]; then
-  tar -czf "$ARCHIVE_PATH" "$RUN_DIR"
+  cp -a "$RUN_DIR" "$STAGED_RUN_PARENT/"
+  tar -C "$STAGING_ROOT" -czf "$ARCHIVE_PATH" "$RUN_DIR"
 else
   PATH_LIST_FILE="$(mktemp)"
   find "$RUN_DIR" -maxdepth 1 \( \
@@ -118,7 +129,14 @@ else
     exit 1
   fi
 
-  tar -czf "$ARCHIVE_PATH" -T "$PATH_LIST_FILE"
+  mkdir -p "$STAGED_RUN_DIR"
+  while IFS= read -r path; do
+    staged_parent="$STAGING_ROOT/$(dirname "$path")"
+    mkdir -p "$staged_parent"
+    cp -a "$path" "$staged_parent/"
+  done < "$PATH_LIST_FILE"
+
+  tar -C "$STAGING_ROOT" -czf "$ARCHIVE_PATH" "$RUN_DIR"
   rm -f "$PATH_LIST_FILE"
 fi
 
