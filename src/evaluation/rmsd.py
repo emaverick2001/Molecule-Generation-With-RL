@@ -58,14 +58,14 @@ def _load_simple_sdf(path: str | Path) -> SimpleMol:
 def _remove_hydrogens_simple(mol: SimpleMol) -> SimpleMol:
     kept = [
         (atom, coordinate)
-        for atom, coordinate in zip(mol.atoms, mol.coordinates, strict=True)
+        for atom, coordinate in zip(mol.atoms, mol.coordinates)
         if atom.upper() != "H"
     ]
 
     if not kept:
         raise ValueError("Cannot remove hydrogens: molecule has no heavy atoms")
 
-    atoms, coordinates = zip(*kept, strict=True)
+    atoms, coordinates = zip(*kept)
     return SimpleMol(atoms=tuple(atoms), coordinates=tuple(coordinates))
 
 
@@ -108,11 +108,10 @@ def _simple_rmsd(predicted: SimpleMol, reference: SimpleMol) -> float:
     for pred_coord, ref_coord in zip(
         predicted.coordinates,
         reference.coordinates,
-        strict=True,
     ):
         squared_distance_sum += sum(
             (pred_value - ref_value) ** 2
-            for pred_value, ref_value in zip(pred_coord, ref_coord, strict=True)
+            for pred_value, ref_value in zip(pred_coord, ref_coord)
         )
 
     return sqrt(squared_distance_sum / len(predicted.coordinates))
@@ -203,7 +202,6 @@ def compute_centroid_distance(
             for predicted_value, reference_value in zip(
                 predicted_centroid,
                 reference_centroid,
-                strict=True,
             )
         )
     )

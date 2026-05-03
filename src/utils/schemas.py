@@ -30,7 +30,7 @@ def _require_nonnegative_int(value: int, field_name: str) -> None:
 
 
 def _require_finite_float(value: float, field_name: str) -> None:
-    if not isinstance(value, int | float) or not isfinite(float(value)):
+    if not isinstance(value, (int, float)) or not isfinite(float(value)):
         raise ValueError(f"{field_name} must be a finite number")
 
 
