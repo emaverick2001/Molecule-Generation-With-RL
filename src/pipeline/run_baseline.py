@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from pathlib import Path
+import re
 
 from src.data.loaders import load_complex_manifest
 from src.data.structure_checks import filter_complexes_by_preflight
@@ -33,6 +34,11 @@ def build_dataset_summary(records: list[ComplexInput], config: dict) -> dict:
             "ground_truth_pose": EXPECTED_EXTENSIONS["ground_truth_pose_path"],
         },
     }
+
+
+def normalize_run_tag(value: str) -> str:
+    tag = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
+    return tag.strip("-_.")
 
 
 def generate_baseline_poses(
@@ -268,6 +274,15 @@ def main() -> None:
             "multi-seed runs without creating one config file per seed."
         ),
     )
+    parser.add_argument(
+        "--run-tag",
+        default=None,
+        help=(
+            "Append a tag to experiment.mode for the run ID, for example "
+            "'25complex'. This avoids collisions between same-seed runs over "
+            "different dataset sizes."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -277,6 +292,12 @@ def main() -> None:
     )
     if args.seed is not None:
         config["experiment"]["seed"] = args.seed
+    if args.run_tag is not None:
+        run_tag = normalize_run_tag(args.run_tag)
+        if run_tag:
+            config["experiment"]["mode"] = (
+                f"{config['experiment']['mode']}_{run_tag}"
+            )
 
     set_seed(config["experiment"]["seed"])
 

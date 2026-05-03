@@ -13,6 +13,7 @@ Options:
   --output-root DIR         Normalized real complex root. Default: data/raw/pdbbind_real
   --exclude-ids-file PATH   IDs to exclude from random sampling. Default: data/processed/diffdock/splits/exclude_ids.txt
   --baseline-config PATH    Baseline config. Default: configs/diffdock/tiny_real.yaml
+  --run-tag TAG             Run ID tag. Default: <num-complexes>complex
   --package-mode MODE       key or full. Default: key
   --package-output-dir DIR  Output dir for packaged archive. Default: packaged_runs
   --include-inputs          Include input protein/ligand/reference structures in package
@@ -33,6 +34,7 @@ SEED="42"
 OUTPUT_ROOT="data/raw/pdbbind_real"
 EXCLUDE_IDS_FILE="data/processed/diffdock/splits/exclude_ids.txt"
 BASELINE_CONFIG="configs/diffdock/tiny_real.yaml"
+RUN_TAG=""
 PACKAGE_MODE="key"
 PACKAGE_OUTPUT_DIR="packaged_runs"
 SKIP_PACKAGE="false"
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --baseline-config)
       BASELINE_CONFIG="$2"
+      shift 2
+      ;;
+    --run-tag)
+      RUN_TAG="$2"
       shift 2
       ;;
     --package-mode)
@@ -102,6 +108,10 @@ if [[ ! -d "scripts" || ! -d "src" ]]; then
   exit 1
 fi
 
+if [[ -z "$RUN_TAG" ]]; then
+  RUN_TAG="${NUM_COMPLEXES}complex"
+fi
+
 if [[ -n "${CONDA_PREFIX:-}" && -z "${DIFFDOCK_PYTHON:-}" ]]; then
   export DIFFDOCK_PYTHON="$CONDA_PREFIX/bin/python"
 fi
@@ -122,7 +132,8 @@ find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_BEFOR
 echo "==> Running DiffDock tiny real baseline"
 uv run python -m src.pipeline.run_baseline \
   --config "$BASELINE_CONFIG" \
-  --seed "$SEED"
+  --seed "$SEED" \
+  --run-tag "$RUN_TAG"
 
 find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_AFTER"
 
