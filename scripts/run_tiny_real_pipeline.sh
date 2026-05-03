@@ -121,7 +121,8 @@ find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_BEFOR
 
 echo "==> Running DiffDock tiny real baseline"
 uv run python -m src.pipeline.run_baseline \
-  --config "$BASELINE_CONFIG"
+  --config "$BASELINE_CONFIG" \
+  --seed "$SEED"
 
 find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_AFTER"
 

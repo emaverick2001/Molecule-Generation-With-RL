@@ -259,6 +259,15 @@ def main() -> None:
         action="store_true",
         help="Allow writing to an existing run directory.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Override experiment.seed from the config. Useful for scripted "
+            "multi-seed runs without creating one config file per seed."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -266,6 +275,8 @@ def main() -> None:
         global_path=args.global_config,
         experiment_path=args.config,
     )
+    if args.seed is not None:
+        config["experiment"]["seed"] = args.seed
 
     set_seed(config["experiment"]["seed"])
 
