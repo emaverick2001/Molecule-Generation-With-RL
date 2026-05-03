@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep hydrogens when counting SDF atoms and centroids.",
     )
+    parser.add_argument(
+        "--centroid-warning-threshold",
+        type=float,
+        default=10.0,
+        help="Warn when generated/reference centroid distance exceeds this value.",
+    )
 
     return parser.parse_args()
 
@@ -47,6 +53,7 @@ def main() -> None:
         run_dir=run_dir,
         output_csv_path=output_path,
         remove_hs=not args.keep_hs,
+        generated_centroid_warning_threshold=args.centroid_warning_threshold,
     )
 
     fieldnames = list(records[0].to_dict().keys()) if records else []

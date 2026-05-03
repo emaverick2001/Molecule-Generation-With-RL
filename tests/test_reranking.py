@@ -8,6 +8,10 @@ from src.evaluation.reranking import (
     save_reranked_manifest,
     summarize_reranking,
 )
+from src.evaluation.reranking_comparison import (
+    compare_reranking_strategies,
+    summarize_reranking_comparison,
+)
 from src.rewards.confidence_reward import (
     build_confidence_reward_records,
     require_confidence_scores,
@@ -131,3 +135,49 @@ $$$$
         (5, 1),
         (1, 2),
     ]
+
+
+def test_reranking_comparison_reports_original_confidence_and_oracle():
+    metric_records = [
+        _metric_record("1abc", sample_id=0, rank=1, rmsd=5.0),
+        _metric_record("1abc", sample_id=1, rank=2, rmsd=1.0),
+        _metric_record("1abc", sample_id=2, rank=3, rmsd=2.0),
+        _metric_record("2xyz", sample_id=0, rank=1, rmsd=1.5),
+        _metric_record("2xyz", sample_id=1, rank=2, rmsd=3.0),
+    ]
+    generated_records = [
+        GeneratedPose("1abc", 0, "a0.sdf", confidence_score=0.9),
+        GeneratedPose("1abc", 1, "a1.sdf", confidence_score=0.2),
+        GeneratedPose("1abc", 2, "a2.sdf", confidence_score=0.1),
+        GeneratedPose("2xyz", 0, "b0.sdf", confidence_score=0.7),
+        GeneratedPose("2xyz", 1, "b1.sdf", confidence_score=0.1),
+    ]
+
+    comparison = compare_reranking_strategies(metric_records, generated_records)
+    summary = summarize_reranking_comparison(comparison)
+    first = next(record for record in comparison if record.complex_id == "1abc")
+
+    assert first.original_top_sample_id == 0
+    assert first.confidence_top_sample_id == 0
+    assert first.oracle_sample_id == 1
+    assert first.confidence_selected_oracle is False
+    assert summary["original_success_at_1"] == 0.5
+    assert summary["confidence_success_at_1"] == 0.5
+    assert summary["oracle_success_at_1"] == 1.0
+
+
+def _metric_record(complex_id, sample_id, rank, rmsd):
+    from src.evaluation.metrics import PoseMetricRecord
+
+    return PoseMetricRecord(
+        complex_id=complex_id,
+        sample_id=sample_id,
+        rank=rank,
+        pose_path=f"{complex_id}_{sample_id}.sdf",
+        reference_pose_path=f"{complex_id}_gt.sdf",
+        rmsd=rmsd,
+        centroid_distance=rmsd,
+        rmsd_below_2=rmsd < 2.0,
+        rmsd_below_5=rmsd < 5.0,
+        valid=True,
+    )

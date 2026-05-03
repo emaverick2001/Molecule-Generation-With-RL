@@ -113,6 +113,23 @@ def test_aggregate_topk_metrics_computes_success_rates_and_best_of_n():
     assert aggregate["success_at_1"] == 0.5
     assert aggregate["success_at_2"] == 1.0
     assert aggregate["best_of_n_mean_rmsd"] == pytest.approx(1.25)
+    assert aggregate["median_best_rmsd"] == pytest.approx(1.25)
+    assert aggregate["num_rmsd_gt_10"] == 0
+    assert aggregate["fraction_rmsd_gt_10"] == 0.0
+
+
+def test_aggregate_topk_metrics_counts_large_rmsd_outliers():
+    records = [
+        _metric("1abc", 0, 12.0),
+        _metric("1abc", 1, 1.0),
+        _metric("2xyz", 0, 15.0),
+    ]
+
+    aggregate = aggregate_topk_metrics(records, top_k=[1], success_threshold=2.0)
+
+    assert aggregate["num_rmsd_gt_10"] == 2
+    assert aggregate["fraction_rmsd_gt_10"] == pytest.approx(2 / 3)
+    assert aggregate["median_best_rmsd"] == pytest.approx(8.0)
 
 
 def test_aggregate_topk_metrics_returns_none_when_no_complex_has_enough_poses():

@@ -62,6 +62,32 @@ def _parse_complex_ids(values: list[str] | None, ids_file: str | None) -> list[s
     return normalized
 
 
+def read_excluded_complex_ids(
+    exclude_ids_file: str | Path | None,
+    *,
+    require_exists: bool = False,
+) -> set[str]:
+    if exclude_ids_file is None:
+        return set()
+
+    path = Path(exclude_ids_file)
+
+    if not path.is_file():
+        if require_exists:
+            raise FileNotFoundError(f"Exclude ID file not found: {path}")
+        return set()
+
+    return set(
+        _normalize_complex_ids(
+            [
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        )
+    )
+
+
 def _looks_like_pdbbind_complex_dir(path: Path) -> bool:
     complex_id = path.name.lower()
 
@@ -107,16 +133,22 @@ def sample_complex_ids(
     source_root: Path,
     sample_size: int,
     seed: int,
+    excluded_complex_ids: set[str] | None = None,
 ) -> list[str]:
     if sample_size <= 0:
         raise ValueError("sample_size must be greater than 0")
 
-    available_ids = discover_complex_ids(source_root)
+    excluded_complex_ids = excluded_complex_ids or set()
+    available_ids = [
+        complex_id
+        for complex_id in discover_complex_ids(source_root)
+        if complex_id not in excluded_complex_ids
+    ]
 
     if len(available_ids) < sample_size:
         raise ValueError(
             f"Requested {sample_size} complexes, found only {len(available_ids)} "
-            f"valid PDBBind complex directories under {source_root}"
+            f"valid non-excluded PDBBind complex directories under {source_root}"
         )
 
     rng = random.Random(seed)
@@ -223,6 +255,14 @@ def parse_args() -> argparse.Namespace:
         default=str(DEFAULT_OUTPUT_ROOT),
         help="Output root for normalized real PDBBind complexes.",
     )
+    parser.add_argument(
+        "--exclude-ids-file",
+        default="data/processed/diffdock/splits/exclude_ids.txt",
+        help=(
+            "Optional file with one complex ID per line to exclude during "
+            "random sampling. Missing default file is ignored."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -233,10 +273,12 @@ def main() -> None:
     if args.random:
         if args.complex_id or args.ids_file:
             raise ValueError("--random cannot be combined with --complex-id or --ids-file")
+        excluded_complex_ids = read_excluded_complex_ids(args.exclude_ids_file)
         complex_ids = sample_complex_ids(
             source_root=Path(args.source),
             sample_size=args.num_complexes,
             seed=args.seed,
+            excluded_complex_ids=excluded_complex_ids,
         )
     else:
         complex_ids = _parse_complex_ids(

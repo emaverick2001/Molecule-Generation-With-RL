@@ -161,6 +161,8 @@ else
     -name "evaluation_summary.md" -o \
     -name "reranking_summary.json" -o \
     -name "reranking_summary.md" -o \
+    -name "reranking_comparison.csv" -o \
+    -name "reranking_comparison.json" -o \
     -name "errors.log" -o \
     -name "logs" -o \
     -name "generated_samples" -o \

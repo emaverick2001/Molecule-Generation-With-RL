@@ -10,6 +10,11 @@ from src.evaluation.metrics import (
     evaluate_generated_poses,
     save_pose_metrics_csv,
 )
+from src.evaluation.reranking_comparison import (
+    compare_reranking_strategies,
+    save_reranking_comparison_csv,
+    summarize_reranking_comparison,
+)
 from src.utils.artifact_logger import read_json, save_csv, save_json, save_text
 from src.utils.config import load_experiment_config
 from src.utils.schemas import ComplexInput, GeneratedPose, RewardRecord
@@ -62,6 +67,8 @@ def run_evaluation(
     summary_path: str | Path,
     config: dict[str, Any],
     rewards_path: str | Path | None = None,
+    reranking_comparison_csv_path: str | Path | None = None,
+    reranking_comparison_json_path: str | Path | None = None,
 ) -> dict[str, Any]:
     evaluation_config = _get_evaluation_config(config)
     input_records = _load_input_records(input_manifest_path)
@@ -105,6 +112,37 @@ def run_evaluation(
         "reward_type": "negative_rmsd",
         "num_records": len(reward_records),
     }
+    reranking_comparison_records = compare_reranking_strategies(
+        metric_records=pose_metric_records,
+        generated_records=generated_records,
+        success_threshold=evaluation_config["rmsd_threshold"],
+    )
+    reranking_comparison_summary = summarize_reranking_comparison(
+        reranking_comparison_records
+    )
+    metrics["reranking_comparison"] = reranking_comparison_summary
+
+    if reranking_comparison_csv_path is not None:
+        save_reranking_comparison_csv(
+            reranking_comparison_records,
+            reranking_comparison_csv_path,
+        )
+    if reranking_comparison_json_path is not None:
+        save_json(
+            {
+                "stage": "reranking_comparison",
+                "description": (
+                    "Comparison of original DiffDock rank-1, confidence-selected "
+                    "top-1, and oracle best-of-n. Confidence is a diagnostic "
+                    "baseline, not assumed to be the final reranker."
+                ),
+                "aggregate": reranking_comparison_summary,
+                "per_complex": [
+                    record.to_dict() for record in reranking_comparison_records
+                ],
+            },
+            reranking_comparison_json_path,
+        )
     save_json(metrics, metrics_path)
     save_text(
         (
@@ -178,6 +216,8 @@ def main() -> None:
         summary_path=run_dir / "evaluation_summary.md",
         config=config,
         rewards_path=run_dir / "rewards.csv",
+        reranking_comparison_csv_path=run_dir / "reranking_comparison.csv",
+        reranking_comparison_json_path=run_dir / "reranking_comparison.json",
     )
 
     print(f"Evaluation complete: {run_dir}")

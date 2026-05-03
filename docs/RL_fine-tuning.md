@@ -1,925 +1,1198 @@
-# PepFlow + GRPO implementation note for Codex
+# DiffDock Post-Training RL Setup for Option2 Migration
 
-This note has two goals:
+## Executive summary
 
-1.⁠ ⁠Make the official PepFlow repo runnable quickly, with the least amount of debugging.
-2.⁠ ⁠Lay out several post-training options for GRPO / DPO / flow-matching alignment, from easiest to hardest, so we can choose based on actual GPU memory and runtime.
+The highest-confidence way to migrate PepFlow Option2-style fine-tuning to DiffDock is to treat **DiffDock’s score model as the policy**, **grouped pose samples per complex as rollouts**, and **terminal pose quality as reward**, but to begin with a **surrogate objective** rather than exact PPO. PepFlow’s public paper and repo expose a multimodal flow-matching model with explicit per-modality losses and modality-controlled sampling, while DiffDock’s public paper and repo expose a diffusion docking model over ligand **translation, rotation, and torsion**, plus a separate confidence model and a training path centered on decomposed score-matching losses and inference-time sampling. That makes a direct “exact PPO over action log-probs” port unrealistic as the first implementation, and makes a **surrogate GRPO/PPO-style objective built on DiffDock loss components** the right starting point. citeturn20view4turn33view3turn6view1turn24view0turn29view3turn29view4
 
-Important meta-point:
-•⁠  ⁠Do *not* over-commit to one method before profiling the base model.
-•⁠  ⁠The current PepFlow code already supports partial sampling (⁠ sample_bb ⁠, ⁠ sample_ang ⁠, ⁠ sample_seq ⁠), so start from the smallest controllable setting first.
-•⁠  ⁠We do *not* yet know the real VRAM cost of training + inference for our hardware. Build the environment, patch the repo, run smoke tests, and profile memory first. Then choose the simplest method that fits.
+DiffDock already provides most of the mechanical pieces needed for this: batched inference over many complexes through a CSV adapter, multiple samples per complex, separate score and confidence checkpoints, ranking by confidence, and per-complex SDF outputs. Its training code already exposes translation, rotation, torsion, and optional backbone/sidechain loss terms, supports non-mean loss computation, logs validation inference metrics, and saves best checkpoints. The practical migration is therefore: implement a typed RL data layer, compute rewards on generated poses, define a DiffDock sample score \(s_\theta = -\ell_{\text{DD}}\), add a ground-truth supervised anchor, add a frozen-reference regularizer, and only later consider exact PPO after sampler instrumentation exists. citeturn28view3turn27view0turn17view1turn17view2turn24view1turn24view2turn24view4
 
----
+Another key conclusion is architectural rather than mathematical: **a single stale `generated_samples_manifest.json` is not enough for real PPO/GRPO training**. PPO-style methods assume repeated optimization over data sampled from an “old” policy. So the baseline generation artifacts are useful for reward debugging and offline warm-start experiments, but actual post-training should produce **step-local rollout manifests** inside the RL run directory. citeturn29view2turn29view3
 
-## 1. What the PepFlow repo already provides
+Finally, confidence must be handled carefully. DiffDock’s README states that the confidence output is **not a binding affinity prediction**, and also warns that confidence values are hard to compare across different complexes. That makes confidence useful as a pose-quality proxy or auxiliary reward, but not as a standalone global reward scale across targets. RMSD, when available, should remain the primary training-time reward for supervised validation and most initial RL experiments. citeturn5view4
 
-### 1.1 Main resources in the repo
-Key folders / files:
-•⁠  ⁠⁠ configs/ ⁠
-•⁠  ⁠⁠ models_con/ ⁠
-•⁠  ⁠⁠ pepflow/ ⁠
-•⁠  ⁠⁠ openfold/ ⁠
-•⁠  ⁠⁠ eval/ ⁠
-•⁠  ⁠⁠ playgrounds/ ⁠
-•⁠  ⁠⁠ train.py ⁠
-•⁠  ⁠⁠ train_ddp.py ⁠
-•⁠  ⁠⁠ models_con/inference.py ⁠
-•⁠  ⁠⁠ models_con/sample.py ⁠
+## Method mapping and sources to prioritize
 
-### 1.2 Official data / pretrained resources
-The README says the official Google Drive contains:
-•⁠  ⁠⁠ PepMerge_release.zip ⁠
-•⁠  ⁠⁠ PepMerge_lmdb.zip ⁠
-•⁠  ⁠⁠ model1.pt ⁠
-•⁠  ⁠⁠ model2.pt ⁠
+The sources Codex should prioritize during implementation are, in order: DiffDock repo files `inference.py`, `train.py`, `utils/training.py`, `confidence/*`, and `evaluate.py`; the DiffDock ICLR 2023 paper and follow-up confidence-bootstrapping paper; the PepFlow ICML 2024 paper and `models_con/flow_model.py`; Williams’ REINFORCE paper; Schulman et al.’s PPO paper; and the GRPO section in DeepSeekMath. The most implementation-relevant evidence is in repo code rather than abstracts. citeturn28view3turn24view0turn17view0turn19view0turn23view3turn20view4turn33view3turn4view3turn29view4turn29view3
 
-Interpretation:
-•⁠  ⁠⁠ PepMerge_release.zip ⁠ = processed peptide–receptor examples.
-•⁠  ⁠⁠ PepMerge_lmdb.zip ⁠ = prebuilt LMDB splits.
-•⁠  ⁠⁠ model1.pt ⁠ = suggested for benchmark evaluation.
-•⁠  ⁠⁠ model2.pt ⁠ = suggested for larger / more realistic peptide design tasks.
+PepFlow’s paper describes a multimodal generator over backbone frames in SE(3), side-chain angles on tori, and sequence tokens on a simplex, and the repo shows that `forward()` returns multiple loss terms while `sample()` supports `sample_bb`, `sample_ang`, and `sample_seq`. DiffDock, by contrast, predicts ligand pose degrees of freedom only, and its public training path aggregates translation, rotation, torsion, and optional auxiliary losses. That means DiffDock is already closer to PepFlow’s “reduced-modality” case than to full peptide co-design. citeturn20view4turn33view3turn32view0turn32view1turn32view2turn32view3turn32view4turn17view1turn17view2
 
-### 1.3 What each script is for
-Use the current code, not the README wording, as source of truth.
+### Concept mapping table
 
-•⁠  ⁠⁠ train.py ⁠:
-  - single-GPU supervised training
-•⁠  ⁠⁠ train_ddp.py ⁠:
-  - multi-GPU DDP supervised training
-•⁠  ⁠⁠ models_con/inference.py ⁠:
-  - loads a checkpoint
-  - builds ⁠ PepDataset ⁠
-  - duplicates each item ⁠ num_samples ⁠ times
-  - runs ⁠ model.sample(...) ⁠
-  - computes a few quick metrics
-  - saves final sampled output as ⁠ .pt ⁠
-•⁠  ⁠⁠ models_con/sample.py ⁠:
-  - loads ⁠ .pt ⁠ files from ⁠ outputs/ ⁠
-  - reconstructs PDB files
-  - writes ⁠ sample_i.pdb ⁠ and ⁠ gt.pdb ⁠
+| PepFlow Option2 concept | DiffDock equivalent | What Codex should implement |
+|---|---|---|
+| Condition \(c\): receptor-conditioned generation | `ComplexInput` + protein structure + fixed ligand identity | A typed RL example joining canonical manifest + generated sample |
+| Grouped rollouts \(G\) from \(\theta_{\text{old}}\) | `samples_per_complex = G` for each complex | Step-local on-policy rollouts under `artifacts/runs/{rl_run_id}/rollouts/step_x/` |
+| Sample score \(s_\theta(y,c) = -\ell_{\text{PF}}\) | Surrogate DiffDock sample score \(s_\theta(\hat y,c) = -\ell_{\text{DD}}\) | A per-sample scorer built from DiffDock loss components |
+| Group-relative advantage | Same | Per-complex z-scored rewards |
+| Clipped PPO/GRPO-style ratio | Same, but use surrogate score ratio first | `surrogate_ppo` objective before exact PPO |
+| Supervised anchor on ground truth | Same | Standard DiffDock supervised loss on ground-truth batches |
+| Reference regularizer | Frozen score-model reference | Prediction matching or adapter-L2 regularization |
+| Partial modality control | No exact analogue | Reduce rollout cost and train fewer parameters rather than slicing modalities |
 
-### 1.4 What the model currently exposes that is useful for us
-⁠ FlowModel.forward(batch) ⁠ returns a dict with:
-•⁠  ⁠⁠ trans_loss ⁠
-•⁠  ⁠⁠ rot_loss ⁠
-•⁠  ⁠⁠ bb_atom_loss ⁠
-•⁠  ⁠⁠ seqs_loss ⁠
-•⁠  ⁠⁠ angle_loss ⁠
-•⁠  ⁠⁠ torsion_loss ⁠
+### Adapted Option2 objective for DiffDock
 
-This is very useful, because later we can:
-•⁠  ⁠keep a supervised anchor loss,
-•⁠  ⁠add a reward-based loss,
-•⁠  ⁠or build a surrogate score from the weighted sum of these losses.
+The closest DiffDock analogue to PepFlow Option2 is:
 
-⁠ FlowModel.sample(batch, num_steps=..., sample_bb=..., sample_ang=..., sample_seq=...) ⁠ already supports modality control:
-•⁠  ⁠⁠ sample_bb=True/False ⁠
-•⁠  ⁠⁠ sample_ang=True/False ⁠
-•⁠  ⁠⁠ sample_seq=True/False ⁠
+\[
+\ell_{\text{DD}}(\hat y,c;\theta)
+=
+w_{\text{tr}}\ell_{\text{tr}}
++
+w_{\text{rot}}\ell_{\text{rot}}
++
+w_{\text{tor}}\ell_{\text{tor}}
++
+w_{\text{bb}}\ell_{\text{bb}}
++
+w_{\text{sc}}\ell_{\text{sc}}
+\]
 
-This gives us natural task slices:
-•⁠  ⁠*known-backbone, sequence-only*: ⁠ sample_bb=False, sample_ang=False, sample_seq=True ⁠
-•⁠  ⁠*known-backbone, sequence+angles*: ⁠ sample_bb=False, sample_ang=True, sample_seq=True ⁠
-•⁠  ⁠*full design*: all ⁠ True ⁠
+\[
+s_\theta(\hat y,c) = -\ell_{\text{DD}}(\hat y,c;\theta)
+\]
 
----
+\[
+A_i = \frac{r_i - \mu_{g(i)}}{\sigma_{g(i)} + \varepsilon}
+\]
 
-## 2. Fast path to a runnable PepFlow environment
+\[
+\rho_i =
+\exp\!\Big(
+\mathrm{clip}\big(
+s_\theta(\hat y_i,c_i) - s_{\theta_{\text{old}}}(\hat y_i,c_i),
+-\delta,\delta
+\big)
+\Big)
+\]
 
-## 2.1 Clone the repo
-⁠ bash
-git clone https://github.com/Ced3-han/PepFlowww.git
-cd PepFlowww
- ⁠
+\[
+L_{\text{surrogate-ppo}}
+=
+-\frac{1}{N}\sum_i
+\min\!\Big(
+\rho_i A_i,\;
+\mathrm{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
+\Big)
++
+\lambda_{\text{sup}}L_{\text{sup}}
++
+\beta_{\text{ref}}L_{\text{ref}}
+\]
 
-## 2.2 Environment strategy
+The critical engineering requirement is that `\ell_DD` be available **per sample**, not only as a batch mean. The public DiffDock loss path already includes an `apply_mean=False` branch, which is the most promising hook for creating a PepFlow-like surrogate score without rewriting the training loss from scratch. citeturn16view0turn17view0turn17view1turn17view2
 
-### Option A: closest to the repo
-Use the official environment file first, then patch missing pieces.
+## Implementation package and concrete file contracts
 
-⁠ bash
-conda env create -f environment.yml
-conda activate flow
+A clean repository split is:
 
-# The README explicitly installs torch-scatter separately.
-# IMPORTANT: install the torch-scatter wheel that matches *your* PyTorch/CUDA version.
-# The README example uses torch 2.0.0 + cu117, but do not hardcode that if your machine differs.
-pip install torch-scatter -f https://data.pyg.org/whl/torch-2.0.0+cu117.html
+```text
+src/
+  rl/
+    __init__.py
+    config.py
+    types.py
+    data.py
+    rewards.py
+    agent.py
+    rollouts.py
+    train.py
+    utils.py
+  pipeline/
+    run_posttraining.py
 
-# Practical extras that the code imports and may need.
-pip install joblib lmdb easydict omegaconf wandb
- ⁠
+configs/
+  rl/
+    base_diffdock.yaml
+    sft_diffdock.yaml
+    reinforce_surrogate_diffdock.yaml
+    ppo_surrogate_diffdock.yaml
 
-### Option B: lean fallback if Option A is painful
-If the full conda env is too heavy or fails, create a lean env and add packages incrementally.
+tests/
+  test_rl_config.py
+  test_rl_types.py
+  test_rl_data.py
+  test_rl_rewards.py
+  test_rl_agent.py
+  test_rl_rollouts.py
+  test_rl_train.py
+  test_run_posttraining.py
 
-⁠ bash
-conda create -n pepflow_min python=3.10 -y
-conda activate pepflow_min
+docs/
+  RL_fine-tuning.md
+```
 
-# Install a PyTorch build matching your machine.
-# Example only; replace with the right torch/cuda pair.
-# pip install torch torchvision torchaudio --index-url ...
+Use `configs/rl/*.yaml` rather than `src/rl/configs/*.yaml` unless your repo has a hard convention requiring configs under `src/`.
 
-pip install biopython biotite pandas scipy pyyaml tqdm matplotlib joblib lmdb easydict omegaconf wandb
-# install torch-scatter with the wheel matching your torch/cuda
- ⁠
+### `src/rl/config.py`
 
-## 2.3 Make the repo importable
-⁠ bash
-export PYTHONPATH=$(pwd):$PYTHONPATH
-python setup.py develop
- ⁠
+**Purpose.** Load and validate RL/post-training configs before expensive work starts.
 
-If ⁠ setup.py develop ⁠ is annoying, keeping ⁠ PYTHONPATH ⁠ is enough for a first pass.
+**Key functions**
+```python
+def load_rl_config(path: str | Path) -> RLConfig: ...
+def validate_rl_config(cfg: RLConfig) -> None: ...
+def resolve_run_paths(cfg: RLConfig, run_id: str | None = None) -> RLConfig: ...
+```
 
----
+**Inputs / outputs**
+- Input: YAML path.
+- Output: validated structured config with sections like `model`, `data`, `rollout`, `reward`, `optimizer`, `algorithm`, `artifacts`.
 
-## 3. Local data layout that is easiest to work with
+**Behavior**
+- Fail fast on missing manifests, missing checkpoints, invalid reward weights, or incompatible settings like `algorithm.name="exact_ppo"` without backend support.
+- Resolve run-local output directories.
+- Snapshot final resolved config into the run directory.
 
-Recommended local structure:
+**Error handling**
+- `FileNotFoundError` for missing files.
+- `ValueError` for unknown algorithms, zero reward weights, invalid group sizes, or contradictory config.
+- `NotImplementedError` for exact PPO requested without transition-stat support.
 
-⁠ text
-PepFlowww/
-  Data/
-    PepMerge_release/
-      1a0n_A/
-      ...
-    lmdb/
-      pep_pocket_train_structure_cache.lmdb
-      pep_pocket_test_structure_cache.lmdb
-    names.txt
-  ckpts/
-    model1.pt
-    model2.pt
-  logs/
- ⁠
+**Tests**
+- `test_load_rl_config_success`
+- `test_validate_rl_config_rejects_unknown_algorithm`
+- `test_validate_rl_config_rejects_zero_reward_weights`
+- `test_resolve_run_paths_creates_expected_locations`
 
-Why this layout:
-•⁠  ⁠⁠ PepDataset ⁠ builds LMDB paths as:
-  - ⁠ {dataset_dir}/{name}_structure_cache.lmdb ⁠
-•⁠  ⁠the default config uses:
-  - ⁠ name: pep_pocket_train ⁠
-  - ⁠ name: pep_pocket_test ⁠
+### `src/rl/types.py`
 
-So the easiest setup is:
-•⁠  ⁠⁠ dataset_dir = ./Data/lmdb ⁠
-•⁠  ⁠⁠ structure_dir = ./Data/PepMerge_release ⁠
+**Purpose.** Typed contracts for records, rewards, and rollout batches.
 
-If you already have the official LMDB zip:
-•⁠  ⁠keep ⁠ reset: False ⁠
-•⁠  ⁠do *not* rebuild the cache unless needed
+**Suggested types**
+```python
+@dataclass(frozen=True)
+class RLExample:
+    complex_id: str
+    protein_path: str
+    ligand_input_path: str
+    predicted_pose_path: str
+    ground_truth_pose_path: str | None
+    sample_rank: int
+    confidence_logit: float | None
+    source_run_id: str
+    source_checkpoint: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-If LMDB is missing:
-•⁠  ⁠set ⁠ reset: True ⁠ once to preprocess from ⁠ structure_dir ⁠
+@dataclass(frozen=True)
+class RewardBreakdown:
+    total: float
+    rmsd: float | None = None
+    docking: float | None = None
+    confidence: float | None = None
+    penalty: float | None = None
+    valid: bool = True
+    reason: str | None = None
 
----
+@dataclass(frozen=True)
+class RolloutRecord:
+    group_id: str
+    example: RLExample
+    reward: RewardBreakdown
+    advantage: float | None = None
+    old_surrogate_score: float | None = None
+    old_logprob: float | None = None
+```
 
-## 4. Required repo patches before doing anything serious
+**Behavior**
+- Serialize cleanly to JSON/JSONL.
+- Preserve both exact and surrogate-policy fields so the schema survives future upgrades.
 
-These are the first things Codex should patch.
+**Error handling**
+- Validate empty IDs, negative ranks, NaN totals.
 
-## 4.1 Always pass the config explicitly
-⁠ train.py ⁠ and ⁠ train_ddp.py ⁠ default to a path like:
-•⁠  ⁠⁠ ./configs/angle/learn_angle.yaml ⁠
+**Tests**
+- `test_rl_types_roundtrip_json`
+- `test_reward_breakdown_rejects_nan_total`
 
-But the repo currently ships:
-•⁠  ⁠⁠ configs/learn_angle.yaml ⁠
+### `src/rl/data.py`
 
-So do *not* rely on the default.
-Always run with:
+**Purpose.** Bridge canonical manifests and generated-sample artifacts into RL-ready records.
 
-⁠ bash
---config ./configs/learn_angle.yaml
- ⁠
+**Key functions**
+```python
+def load_generated_samples_manifest(path: str | Path) -> list[dict]: ...
+def export_complexes_to_diffdock_csv(
+    records: Sequence[ComplexInput],
+    out_path: str | Path,
+) -> Path: ...
+def join_samples_with_complex_manifest(
+    samples: Sequence[dict],
+    complexes: Sequence[ComplexInput],
+) -> list[RLExample]: ...
+def group_examples_by_complex(
+    examples: Sequence[RLExample],
+    expected_group_size: int | None = None,
+) -> dict[str, list[RLExample]]: ...
+def write_rollout_manifest(
+    records: Sequence[RolloutRecord],
+    out_path: str | Path,
+) -> None: ...
+```
 
-## 4.2 Patch ⁠ configs/learn_angle.yaml ⁠
-The current config contains absolute local paths from the authors’ machine.
+**Inputs / outputs**
+- Input: canonical split manifest, step-local generated sample manifests, optional CSV export path for DiffDock CLI fallback.
+- Output: `RLExample` objects and grouped rollout records.
 
-Change the dataset section to something like:
+**Behavior**
+- `export_complexes_to_diffdock_csv` should map your canonical manifest to the DiffDock CSV contract with columns like `complex_name`, `protein_path`, `ligand_description`, and optionally `protein_sequence`. For your current project, `ligand_description` should usually be the ligand file path, not a SMILES string. citeturn5view4
+- Join samples to canonical manifests by `complex_id`.
+- Prefer one metadata file per rollout step or shard, not one file per complex.
 
-⁠ yaml
-dataset:
-  train:
-    type: peprec
-    structure_dir: ./Data/PepMerge_release
-    dataset_dir: ./Data/lmdb
-    name: pep_pocket_train
-    reset: False
-  val:
-    type: peprec
-    structure_dir: ./Data/PepMerge_release
-    dataset_dir: ./Data/lmdb
-    name: pep_pocket_test
-    reset: False
- ⁠
+**Error handling**
+- Raise on missing `complex_id`, missing generated pose path, or conflicting ground-truth paths for the same complex.
+- Warn if off-policy artifacts are being used where on-policy rollouts are required.
 
-For smoke tests, also reduce runtime:
-⁠ yaml
+**Tests**
+- `test_export_complexes_to_diffdock_csv_columns`
+- `test_join_samples_with_complex_manifest_success`
+- `test_join_samples_with_complex_manifest_missing_id`
+- `test_group_examples_by_complex_enforces_group_size`
+
+### `src/rl/rewards.py`
+
+**Purpose.** Terminal reward functions only. No training logic, no plotting, no evaluation reports.
+
+**Key functions**
+```python
+def compute_rmsd_reward(
+    predicted_pose_path: str | Path,
+    ground_truth_pose_path: str | Path,
+    *,
+    symmetry_corrected: bool = True,
+    sigma_angstrom: float = 2.0,
+    max_rmsd: float = 10.0,
+) -> RewardComponent: ...
+
+def compute_docking_reward(
+    protein_path: str | Path,
+    predicted_pose_path: str | Path,
+    *,
+    backend: Literal["gnina", "vina"] = "gnina",
+    executable: str = "gnina",
+    timeout_s: int = 120,
+) -> RewardComponent: ...
+
+def compute_confidence_reward(
+    confidence_value: float | np.ndarray | None,
+    *,
+    mode: Literal["logit", "probability", "predicted_rmsd"] = "logit",
+    temperature: float = 1.0,
+) -> RewardComponent: ...
+
+def combine_rewards(
+    rmsd_component: RewardComponent | None,
+    docking_component: RewardComponent | None,
+    confidence_component: RewardComponent | None,
+    *,
+    weights: dict[str, float],
+    invalid_reward: float = -1.0,
+) -> RewardBreakdown: ...
+
+def score_example(example: RLExample, cfg: RewardConfig) -> RewardBreakdown: ...
+```
+
+**Behavior**
+- RMSD reward should mirror DiffDock evaluation as closely as possible: try symmetry-corrected RMSD, take the minimum over all available ground-truth poses if more than one exists, and fall back to raw coordinate RMSD if symmetry correction fails. citeturn22view3
+- Confidence reward must support scalar logits, probabilities, multibin outputs, or predicted RMSD. DiffDock’s confidence training path supports classification and regression modes. citeturn19view0turn19view3
+- Docking-score reward should be optional and cached, because DiffDock confidence is not an affinity estimate. citeturn5view4
+- Composite reward should renormalize over available valid components rather than silently treating missing fields as zero.
+
+**Error handling**
+- Missing or unreadable pose files should return `valid=False` and a reason.
+- Ground-truth missing for RMSD mode should not silently become zero reward.
+- Docking backend timeout should return invalid and not crash the trainer.
+
+**Tests**
+- `test_rmsd_reward_perfect_match_is_maximal`
+- `test_rmsd_reward_missing_gt_is_invalid`
+- `test_confidence_reward_accepts_multibin_output`
+- `test_combine_rewards_renormalizes_missing_components`
+- `test_docking_reward_timeout_returns_invalid`
+
+### `src/rl/agent.py`
+
+**Purpose.** Wrap DiffDock model loading, sampling, supervised loss, surrogate scoring, and checkpoint I/O. It should **not** own rewards or benchmark evaluation.
+
+**Key class**
+```python
+class DiffDockRLAgent:
+    def __init__(
+        self,
+        *,
+        diffdock_repo_root: str | Path,
+        model_dir: str | Path,
+        ckpt: str,
+        confidence_model_dir: str | Path | None = None,
+        confidence_ckpt: str | None = None,
+        device: str = "cuda",
+        trainable_mode: Literal["full", "last_layers", "lora"] = "last_layers",
+    ) -> None: ...
+
+    def frozen_old_policy(self) -> "DiffDockRLAgent": ...
+    def frozen_reference_policy(self) -> "DiffDockRLAgent": ...
+
+    def generate_samples(
+        self,
+        complexes: Sequence[ComplexInput],
+        *,
+        samples_per_complex: int,
+        inference_steps: int,
+        actual_steps: int | None,
+        batch_size: int,
+        seed: int | None,
+        out_dir: str | Path,
+        save_visualisation: bool = False,
+    ) -> list[RLExample]: ...
+
+    def compute_supervised_loss(self, batch: Any) -> dict[str, torch.Tensor]: ...
+
+    def compute_surrogate_scores(
+        self,
+        examples: Sequence[RLExample],
+        *,
+        scoring_mode: Literal["pseudo_batch", "prediction_match"] = "pseudo_batch",
+    ) -> torch.Tensor: ...
+
+    def compute_exact_logprobs(self, trajectories: Sequence[Any]) -> torch.Tensor: ...
+
+    def compute_reference_match_loss(
+        self,
+        batch_or_examples: Any,
+        *,
+        mode: Literal["prediction_mse", "adapter_l2", "none"] = "prediction_mse",
+    ) -> torch.Tensor: ...
+
+    def save_checkpoint(...): ...
+    def load_checkpoint(...): ...
+```
+
+**Behavior**
+- Prefer an **in-process Python backend**. A subprocess CLI fallback is acceptable for smoke tests only.
+- `generate_samples` should use DiffDock grouped inference through `samples_per_complex`, preserve rank info, and capture confidence from structured outputs rather than only from filenames. The public inference path writes `rank1.sdf` plus `rank{k}_confidence{x}.sdf` files after reordering by confidence. citeturn28view3
+- `compute_supervised_loss` should return a dict with at least `loss`, `tr_loss`, `rot_loss`, `tor_loss`, and active auxiliary terms.
+- `compute_surrogate_scores` should be the main Option2 bridge. Preferred implementation: construct a pseudo-batch from generated poses and compute one scalar per sample using DiffDock loss components with `apply_mean=False`. Fallback: reference-model prediction matching if pseudo-batch scoring is not ready.
+
+**Error handling**
+- Errors must include `complex_id` and rollout step information.
+- If exact log-probs are requested without sampler support, raise `NotImplementedError` with a clear message.
+- On checkpoint load mismatch, fail clearly with repo/version context.
+
+**Tests**
+- `test_agent_loads_mock_backend`
+- `test_generate_samples_returns_expected_schema`
+- `test_compute_supervised_loss_has_required_keys`
+- `test_compute_surrogate_scores_returns_one_value_per_sample`
+- `test_exact_logprob_raises_clear_error`
+- `test_checkpoint_roundtrip`
+
+### `src/rl/rollouts.py`
+
+**Purpose.** Collect on-policy grouped rollouts and convert them into update-ready minibatches.
+
+**Key functions**
+```python
+def collect_on_policy_rollouts(
+    old_agent: DiffDockRLAgent,
+    complexes: Sequence[ComplexInput],
+    *,
+    reward_cfg: RewardConfig,
+    rollout_cfg: RolloutConfig,
+    out_dir: str | Path,
+) -> list[RolloutRecord]: ...
+
+def compute_group_advantages(
+    records: Sequence[RolloutRecord],
+    *,
+    eps: float = 1e-6,
+    normalization: Literal["zscore", "center", "rank"] = "zscore",
+) -> list[RolloutRecord]: ...
+
+def compute_surrogate_ratios(
+    new_scores: torch.Tensor,
+    old_scores: torch.Tensor,
+    *,
+    max_score_delta: float = 20.0,
+) -> torch.Tensor: ...
+
+def minibatch_rollouts(
+    records: Sequence[RolloutRecord],
+    batch_size: int,
+    *,
+    shuffle: bool = True,
+) -> Iterator[list[RolloutRecord]]: ...
+```
+
+**Behavior**
+- `collect_on_policy_rollouts` should sample grouped poses from an old-policy snapshot, compute rewards, cache `old_surrogate_score` if needed, and write a step-local rollout manifest.
+- Advantages must be normalized **within each complex group**, not globally.
+- Exponentiation should happen only after clipping the score delta.
+
+**Error handling**
+- If a group has too few valid samples after reward failures, either drop it or zero the advantage according to config.
+- If an entire step is invalid, return a typed failure so the trainer can skip the update.
+
+**Tests**
+- `test_group_advantages_zero_mean_per_group`
+- `test_surrogate_ratios_finite_after_clipping`
+- `test_collect_on_policy_rollouts_writes_step_manifest`
+- `test_invalid_groups_are_dropped_or_zeroed`
+
+### `src/rl/train.py`
+
+**Purpose.** Implement SFT, REINFORCE, and surrogate PPO loops.
+
+**Key functions**
+```python
+def run_supervised_finetune(cfg: RLConfig) -> TrainSummary: ...
+def run_reinforce(cfg: RLConfig) -> TrainSummary: ...
+def run_surrogate_ppo(cfg: RLConfig) -> TrainSummary: ...
+
+def train_step_supervised(...): ...
+def train_step_reinforce(...): ...
+def train_step_surrogate_ppo(...): ...
+
+def maybe_run_eval_hook(
+    eval_hook: Callable[[Path], dict[str, float]] | None,
+    checkpoint_path: Path,
+    step: int,
+) -> dict[str, float]: ...
+
+def main(config_path: str | Path) -> int: ...
+```
+
+**Behavior**
+- `run_supervised_finetune` is the sanity stage. It proves model loading, optimizer steps, checkpointing, and eval-hook wiring before any RL logic is layered in.
+- `run_reinforce` should be the first reward-driven stage. Use exact log-probs only if available; otherwise use surrogate scores with on-policy grouped rewards.
+- `run_surrogate_ppo` should cache old scores once per rollout batch and then perform several clipped-ratio minibatch updates, matching PPO’s core reuse pattern. PPO’s clipped-ratio logic and GRPO’s group-relativized advantages are the right references here. citeturn29view4turn29view0turn29view3
+- `maybe_run_eval_hook` must call out to external evaluation code. The RL package should not own full benchmark evaluation.
+
+**Error handling**
+- Save `latest.pt` before raising on irrecoverable training errors.
+- Skip invalid rollout steps rather than corrupting optimizer state.
+- Resume from checkpoint with step counter, optimizer state, optional scaler state, and optional EMA state.
+
+**Tests**
+- `test_supervised_step_updates_parameters`
+- `test_reinforce_step_runs_with_mock_rollouts`
+- `test_surrogate_ppo_applies_ratio_clipping`
+- `test_resume_restores_optimizer_and_step`
+- `test_train_skips_all_invalid_rollout_step`
+- `test_eval_hook_called_on_schedule`
+
+### `src/rl/utils.py`
+
+**Purpose.** Numerical, reproducibility, and filesystem helpers.
+
+**Key functions**
+```python
+def set_seed(seed: int) -> None: ...
+def safe_zscore(x, eps: float = 1e-6): ...
+def replace_nan_inf(t: torch.Tensor, value: float = 0.0) -> torch.Tensor: ...
+def ensure_dir(path: str | Path) -> Path: ...
+def write_json(obj: Any, path: str | Path) -> None: ...
+def write_jsonl(rows: Iterable[dict], path: str | Path) -> None: ...
+def read_jsonl(path: str | Path) -> list[dict]: ...
+def parse_confidence_from_filename(path: str) -> float | None: ...
+def summarize_rewards(records: Sequence[RolloutRecord]) -> dict[str, float]: ...
+```
+
+**Behavior**
+- Keep numerical stabilization centralized.
+- `parse_confidence_from_filename` is fallback only. Prefer explicit metadata.
+
+**Tests**
+- `test_safe_zscore_handles_constant_group`
+- `test_replace_nan_inf`
+- `test_parse_confidence_from_filename`
+- `test_jsonl_roundtrip`
+
+### `src/pipeline/run_posttraining.py`
+
+**Purpose.** Pipeline entrypoint that creates run directories and dispatches into `src/rl/train.py`.
+
+**Key functions**
+```python
+def run_posttraining(config_path: str | Path) -> Path: ...
+def create_run_skeleton(cfg: RLConfig) -> Path: ...
+```
+
+**Behavior**
+- Create run-local directories.
+- Snapshot config and input manifests.
+- Call trainer.
+- Save summary metadata and pointer to best checkpoint.
+
+**Error handling**
+- Always write `errors.log` and `summary.md`, even on failures.
+- Never modify canonical manifests.
+
+**Tests**
+- `test_run_posttraining_creates_artifacts`
+- `test_run_posttraining_passes_config_to_train_main`
+
+## Rewards, objectives, and training loops
+
+### Reward comparison table
+
+| Reward type | Recommended formula | Required inputs | Strength | Risk | Best first use |
+|---|---|---|---|---|---|
+| RMSD-based | \(r_{\text{rmsd}}=\exp(-\mathrm{RMSD}/\sigma)\) | predicted SDF + ground-truth SDF | Directly aligned to evaluation | Needs ground truth | Default reward for train/val |
+| Docking-score-based | \(r_{\text{dock}}=\tanh((\mu_c-s_i)/(\sigma_c+\epsilon))\) | protein + predicted SDF + gnina/vina | Works without ground truth | Slow, not well-calibrated globally | Optional secondary reward |
+| Confidence-based | \(r_{\text{conf}}=2\sigma(c/T)-1\) for logit \(c\) | DiffDock confidence output | Cheap and already produced | Not affinity, weak cross-target calibration | Auxiliary reward |
+| Composite | Weighted normalized sum of valid components | Any subset | More robust than one signal | Weight tuning | Best full setup |
+
+DiffDock’s public README explicitly says the confidence score is not a binding-affinity prediction and gives only rough interpretation thresholds, while noting that it is difficult to compare confidence across different complexes. That means confidence should usually be normalized within groups or treated as a bounded auxiliary term, not a standalone global target. citeturn5view4
+
+### Exact reward formulas and edge handling
+
+For RMSD reward, use:
+
+\[
+r_{\text{rmsd}} = \exp\left(-\frac{\mathrm{RMSD}(\hat y, y^\star)}{\sigma}\right)
+\]
+
+with `sigma_angstrom ≈ 2.0` and optional clipping at `max_rmsd`. If there are multiple ground-truth poses, take the minimum symmetry-aware RMSD across them; if symmetry-corrected RMSD fails, fall back to raw coordinate RMSD instead of crashing, matching public DiffDock evaluation. Missing or unreadable ground-truth files should return `valid=False`. citeturn22view3
+
+For docking-score reward, assume a backend score \(s_i\) where lower is better, then normalize per target or per rollout group:
+
+\[
+\tilde s_i = \frac{\mu_c - s_i}{\sigma_c + \epsilon},\qquad
+r_{\text{dock}} = \tanh(\tilde s_i)
+\]
+
+Use cached results and a timeout. A failed docking call should never crash the trainer.
+
+For confidence reward, default to a logit-based transform:
+
+\[
+r_{\text{conf}} = 2 \cdot \sigma(c/T) - 1
+\]
+
+If DiffDock confidence is configured as multibin classification or RMSD regression, convert that explicitly in config. The public confidence training code supports BCE and MSE modes, so the parser must not hardcode one output type. citeturn19view0turn19view3
+
+For a composite reward, first normalize each component into roughly the same range, then compute:
+
+\[
+r_{\text{total}}
+=
+\frac{
+w_{\text{rmsd}}r_{\text{rmsd}}+
+w_{\text{dock}}r_{\text{dock}}+
+w_{\text{conf}}r_{\text{conf}}-
+\lambda_{\text{pen}}r_{\text{penalty}}
+}{
+\sum_{m \in \text{valid}} w_m
+}
+\]
+
+If all components are invalid, assign `invalid_reward` and skip or zero that sample by config.
+
+### DiffDock surrogate score
+
+The most important DiffDock-specific implementation hook is the public loss function path. DiffDock’s training utilities expose translation, rotation, torsion, backbone, and sidechain loss components and already support a non-mean output path. Codex should define:
+
+\[
+\ell_{\text{DD}} =
+w_{\text{tr}}\ell_{\text{tr}} +
+w_{\text{rot}}\ell_{\text{rot}} +
+w_{\text{tor}}\ell_{\text{tor}} +
+w_{\text{bb}}\ell_{\text{bb}} +
+w_{\text{sc}}\ell_{\text{sc}}
+\]
+
+and then use \(s_\theta = -\ell_{\text{DD}}\) as the PepFlow-style sample score. This is the cleanest migration target because it stays close to the native DiffDock training objective. citeturn17view1turn17view2turn17view0
+
+### Supervised fine-tune pseudocode
+
+```python
+agent = DiffDockRLAgent(...)
+optimizer = build_optimizer(agent.trainable_parameters(), lr=cfg.optim.lr)
+
+for step in range(cfg.train.max_steps):
+    gt_batch = next(train_loader)
+    loss_dict = agent.compute_supervised_loss(gt_batch)
+    total_loss = loss_dict["loss"]
+
+    backward_and_step(total_loss, optimizer, cfg.train)
+
+    if step % cfg.logging.log_every == 0:
+        log({
+            "loss": total_loss.item(),
+            "tr_loss": loss_dict["tr_loss"].item(),
+            "rot_loss": loss_dict["rot_loss"].item(),
+            "tor_loss": loss_dict["tor_loss"].item(),
+        })
+
+    if step % cfg.checkpoint.every == 0:
+        agent.save_checkpoint(...)
+        maybe_run_eval_hook(...)
+```
+
+**Starter hyperparameters**
+- `trainable_mode: last_layers` or `lora`
+- `lr: 1e-5` for last layers, `5e-5` for LoRA
+- `batch_complexes: 2+`
+- `grad_accum_steps: 4-16`
+- `max_grad_norm: 1.0`
+
+This stage exists to prove that model load/save, optimizer, checkpointing, and val-hook execution all work with the DiffDock backend before reward-driven rollouts are introduced. DiffDock’s public trainer already logs train/val losses and validation inference metrics and saves best checkpoints by both val loss and inference metric, which is the right behavior to mirror. citeturn24view1turn24view2turn24view4
+
+### REINFORCE pseudocode
+
+```python
+agent = DiffDockRLAgent(...)
+reference = agent.frozen_reference_policy()
+
+for update_idx in range(cfg.train.max_updates):
+    old_agent = agent.frozen_old_policy()
+    complexes = sample_complexes(train_manifest, cfg.rollout.batch_complexes)
+
+    rollouts = collect_on_policy_rollouts(
+        old_agent,
+        complexes,
+        reward_cfg=cfg.reward,
+        rollout_cfg=cfg.rollout,
+        out_dir=step_dir(update_idx),
+    )
+    rollouts = compute_group_advantages(rollouts)
+
+    if cfg.algorithm.policy_mode == "exact":
+        logp = agent.compute_exact_logprobs(rollouts.trajectories)
+        loss_rl = -(advantages * logp).mean()
+    else:
+        s_new = agent.compute_surrogate_scores([r.example for r in rollouts])
+        adv = torch.tensor([r.advantage for r in rollouts], device=s_new.device)
+        loss_rl = -(adv * s_new).mean()
+
+    gt_batch = next(anchor_loader)
+    loss_sup = cfg.loss.lambda_supervised * agent.compute_supervised_loss(gt_batch)["loss"]
+    loss_ref = cfg.loss.beta_ref * agent.compute_reference_match_loss(gt_batch)
+
+    total_loss = loss_rl + loss_sup + loss_ref
+    backward_and_step(total_loss, optimizer, cfg.train)
+    checkpoint_and_log(...)
+```
+
+This is the first real reward-driven mode. If exact transition log-probs are unavailable, use surrogate scores but keep the training **on-policy** and grouped by complex. REINFORCE remains the conceptual base case for terminal reward optimization. citeturn4view3
+
+### Surrogate PPO pseudocode
+
+```python
+for update_idx in range(cfg.train.max_updates):
+    old_agent = agent.frozen_old_policy()
+    rollouts = collect_on_policy_rollouts(old_agent, ...)
+
+    old_scores = torch.tensor([r.old_surrogate_score for r in rollouts], device=device)
+    advantages = torch.tensor([r.advantage for r in rollouts], device=device)
+
+    for ppo_epoch in range(cfg.algorithm.ppo_epochs):
+        for minibatch in minibatch_rollouts(rollouts, cfg.algorithm.minibatch_size):
+            if cfg.algorithm.policy_mode == "exact":
+                ratio = torch.exp(logp_new - logp_old)
+            else:
+                new_scores = agent.compute_surrogate_scores([r.example for r in minibatch])
+                ratio = torch.exp(
+                    torch.clamp(
+                        new_scores - old_scores_mb,
+                        -cfg.loss.max_score_delta,
+                        cfg.loss.max_score_delta,
+                    )
+                )
+
+            loss_rl = -torch.mean(
+                torch.minimum(
+                    ratio * advantages_mb,
+                    torch.clamp(ratio, 1 - cfg.loss.clip_eps, 1 + cfg.loss.clip_eps) * advantages_mb,
+                )
+            )
+
+            gt_batch = next(anchor_loader)
+            loss_sup = cfg.loss.lambda_supervised * agent.compute_supervised_loss(gt_batch)["loss"]
+            loss_ref = cfg.loss.beta_ref * agent.compute_reference_match_loss(gt_batch)
+            total_loss = loss_rl + loss_sup + loss_ref
+            backward_and_step(total_loss, optimizer, cfg.train)
+```
+
+Use:
+- `clip_eps = 0.1` or `0.2`
+- `ppo_epochs = 2-4`
+- `minibatch_size = 8-32 rollout samples`
+- `group_size = samples_per_complex = 4` for smoke runs
+- `max_score_delta = 20.0`
+
+This follows PPO’s clipped-ratio logic while substituting a surrogate score ratio until exact transition densities are available. The group-relative baseline pattern comes directly from GRPO. citeturn29view4turn29view0turn29view3
+
+### Checkpointing, logging, and eval hooks
+
+Save at least:
+- `checkpoints/latest.pt`
+- `checkpoints/best_val_reward.pt`
+- `checkpoints/best_val_rmsd.pt`
+- optimizer/scaler state
+- resolved config snapshot
+- step counter
+
+Log at least:
+- rollout reward mean/std/max
+- per-component reward means
+- advantage std
+- surrogate score mean/std
+- supervised anchor loss
+- reference loss
+- lr, grad norm
+- rollout wall time, scoring wall time
+- valid-sample fraction
+- peak GPU memory
+- skipped-step count
+
+The eval hook should accept a checkpoint path, run on a fixed validation manifest, return a metrics dict, and write outputs only under the current RL run directory.
+
+### Example YAML snippets
+
+The current DiffDock default inference config on `main` uses `inference_steps: 20`, `actual_steps: 19`, separate score and confidence directories under `./workdir/v1.1`, and `samples_per_complex: 10`; those are useful placeholders but should be pinned to a specific DiffDock commit or release in your repo. citeturn27view0turn4view0
+
+```yaml
+# configs/rl/sft_diffdock.yaml
+algorithm:
+  name: sft
+
+model:
+  diffdock_repo_root: external/DiffDock
+  model_dir: external/DiffDock/workdir/v1.1/score_model
+  ckpt: best_ema_inference_epoch_model.pt
+  confidence_model_dir: external/DiffDock/workdir/v1.1/confidence_model
+  confidence_ckpt: best_model_epoch75.pt
+  trainable_mode: last_layers
+
+data:
+  train_manifest: data/processed/diffdock/manifests/train_manifest.json
+  val_manifest: data/processed/diffdock/manifests/val_manifest.json
+
 train:
-  max_iters: 1000
-  val_freq: 100
+  device: cuda
+  mixed_precision: bf16
+  lr: 1.0e-5
+  batch_complexes: 2
+  grad_accum_steps: 8
+  max_steps: 500
+  max_grad_norm: 1.0
+
+logging:
+  log_every: 10
+
+checkpoint:
+  every: 100
+
+artifacts:
+  run_root: artifacts/runs
+```
+
+```yaml
+# configs/rl/ppo_surrogate_diffdock.yaml
+algorithm:
+  name: surrogate_ppo
+  policy_mode: surrogate
+  ppo_epochs: 3
+  minibatch_size: 16
+  on_policy_required: true
+
+model:
+  diffdock_repo_root: external/DiffDock
+  model_dir: external/DiffDock/workdir/v1.1/score_model
+  ckpt: best_ema_inference_epoch_model.pt
+  confidence_model_dir: external/DiffDock/workdir/v1.1/confidence_model
+  confidence_ckpt: best_model_epoch75.pt
+  trainable_mode: lora
+
+data:
+  train_manifest: data/processed/diffdock/manifests/train_manifest.json
+  val_manifest: data/processed/diffdock/manifests/val_manifest.json
+
+rollout:
+  batch_complexes: 2
+  samples_per_complex: 4
+  inference_steps: 20
+  actual_steps: 19
   batch_size: 4
- ⁠
-
-## 4.3 Patch ⁠ models_con/pep_dataloader.py ⁠
-There is a hardcoded absolute path to ⁠ names.txt ⁠.
-
-Make it configurable. Example patch:
-
-⁠ python
-# BEFORE:
-# with open('/abs/path/to/names.txt','r') as f:
-
-# AFTER:
-import os
-
-DATA_ROOT = os.environ.get("PEPFLOW_DATA_ROOT", "./Data")
-NAMES_PATH = os.environ.get("PEPFLOW_NAMES_PATH", os.path.join(DATA_ROOT, "names.txt"))
-
-names = []
-if os.path.exists(NAMES_PATH):
-    with open(NAMES_PATH, "r") as f:
-        for line in f:
-            names.append(line.strip())
- ⁠
-
-Practical advice:
-•⁠  ⁠For the very first smoke test, if the names filtering causes trouble, make it optional.
-•⁠  ⁠Since we already have official LMDB splits, we do not need to immediately understand every split-related detail in preprocessing.
-
-## 4.4 Patch ⁠ models_con/inference.py ⁠ boolean arguments
-The current script uses ⁠ type=bool ⁠ in argparse, which is a bad idea because:
-•⁠  ⁠⁠ --sample_bb False ⁠ often still becomes ⁠ True ⁠ in Python parsing.
-
-Replace with a safe parser:
-
-⁠ python
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    v = v.lower()
-    if v in ("yes", "true", "t", "1", "y"):
-        return True
-    if v in ("no", "false", "f", "0", "n"):
-        return False
-    raise argparse.ArgumentTypeError("Boolean value expected.")
- ⁠
-
-Then use:
-⁠ python
-args.add_argument('--sample_bb', type=str2bool, default=True)
-args.add_argument('--sample_ang', type=str2bool, default=True)
-args.add_argument('--sample_seq', type=str2bool, default=True)
- ⁠
-
-Also delete the duplicated ⁠ --num_samples ⁠ definitions.
-
-## 4.5 Patch ⁠ FlowModel.sample(...) ⁠ for efficiency
-Right now ⁠ sample() ⁠ builds a ⁠ clean_traj ⁠ list and appends CPU copies at every step.
-That is okay for inspection, but not ideal for large ⁠ num_steps ⁠ or RL.
-
-Add a flag:
-⁠ python
-def sample(..., return_traj=False):
- ⁠
-
-Behavior:
-•⁠  ⁠⁠ return_traj=False ⁠:
-  - return only the final sample dict
-•⁠  ⁠⁠ return_traj=True ⁠:
-  - keep the current full trajectory behavior
-
-For RL, also add a second mode:
-⁠ python
-def sample_with_cache(...):
- ⁠
-
-This should return *minimal* cache needed for training, e.g.:
-•⁠  ⁠current state per step
-•⁠  ⁠time index
-•⁠  ⁠maybe RNG seeds / noises if stochastic sampling is added later
-•⁠  ⁠not full CPU copies of every tensor unless necessary
-
----
-
-## 5. Smoke tests before any GRPO work
-
-## 5.1 Import test
-⁠ bash
-python - <<'PY'
-import torch
-from models_con.pep_dataloader import PepDataset
-from pepflow.utils.misc import load_config
-print("torch", torch.__version__)
-cfg, name = load_config("./configs/learn_angle.yaml")
-print("loaded config:", name)
-PY
- ⁠
-
-## 5.2 Dataset test
-⁠ bash
-python - <<'PY'
-from models_con.pep_dataloader import PepDataset
-ds = PepDataset(
-    structure_dir="./Data/PepMerge_release",
-    dataset_dir="./Data/lmdb",
-    name="pep_pocket_train",
-    reset=False,
-)
-print("len(ds) =", len(ds))
-x = ds[0]
-print("keys:", x.keys())
-print("id:", x["id"])
-print("generate residues:", x["generate_mask"].sum().item())
-PY
- ⁠
-
-## 5.3 Single-GPU debug train
-Use debug mode first because it avoids the full logging / wandb workflow.
-
-⁠ bash
-python train.py \
-  --config ./configs/learn_angle.yaml \
-  --device cuda:0 \
-  --num_workers 0 \
-  --debug
- ⁠
-
-If that works, try a short real run:
-⁠ bash
-python train.py \
-  --config ./configs/learn_angle.yaml \
-  --device cuda:0 \
-  --num_workers 4 \
-  --name pepflow_local
- ⁠
-
-## 5.4 Tiny inference test with a pretrained checkpoint
-Start small on purpose:
-•⁠  ⁠low ⁠ num_steps ⁠
-•⁠  ⁠low ⁠ num_samples ⁠
-
-⁠ bash
-mkdir -p ./tmp_outputs/outputs
-
-python models_con/inference.py \
-  --config ./configs/learn_angle.yaml \
-  --device cuda:0 \
-  --ckpt ./ckpts/model1.pt \
-  --output ./tmp_outputs \
-  --num_steps 20 \
-  --num_samples 4 \
-  --sample_bb false \
-  --sample_ang false \
-  --sample_seq true
- ⁠
-
-Then reconstruct PDBs:
-⁠ bash
-python models_con/sample.py --SAMPLEDIR ./tmp_outputs
- ⁠
-
-This is the best first test for the *known-backbone, sequence-only* path.
-
----
-
-## 6. Memory profiling before choosing a post-training method
-
-We do not know yet whether:
-•⁠  ⁠the model forward is cheap,
-•⁠  ⁠the sampler is expensive,
-•⁠  ⁠or full-trajectory storage becomes the bottleneck.
-
-So first profile.
-
-Codex should create a small script:
-•⁠  ⁠vary ⁠ num_steps ⁠ in ⁠ [10, 20, 50, 100] ⁠
-•⁠  ⁠vary ⁠ num_samples ⁠ in ⁠ [1, 2, 4, 8, 16] ⁠
-•⁠  ⁠vary mode:
-  - seq-only
-  - seq+angles
-  - full
-•⁠  ⁠log:
-  - wall-clock time
-  - ⁠ torch.cuda.max_memory_allocated() ⁠
-  - optional host RAM if easy
-
-Skeleton idea:
-⁠ python
-torch.cuda.reset_peak_memory_stats()
-# run model.forward(...)
-# run model.sample(...)
-peak = torch.cuda.max_memory_allocated() / 1024**3
- ⁠
-
-Most likely knobs for reducing cost:
-1.⁠ ⁠smaller ⁠ num_samples ⁠
-2.⁠ ⁠smaller ⁠ num_steps ⁠
-3.⁠ ⁠partial sampling (⁠ sample_bb=False ⁠)
-4.⁠ ⁠⁠ return_traj=False ⁠
-5.⁠ ⁠LoRA / partial fine-tuning only
-6.⁠ ⁠gradient accumulation instead of large batch size
-
----
-
-## 7. Common notation for post-training
-
-Let:
-•⁠  ⁠⁠ c ⁠ = condition (pocket, receptor, maybe backbone)
-•⁠  ⁠⁠ y ⁠ = final generated peptide sample
-•⁠  ⁠⁠ pi_theta(y | c) ⁠ = current PepFlow generator
-•⁠  ⁠⁠ theta_ref ⁠ = frozen pretrained reference model
-•⁠  ⁠⁠ theta_old ⁠ = rollout snapshot used to generate on-policy samples
-•⁠  ⁠⁠ G ⁠ = group size for GRPO
-•⁠  ⁠⁠ r_i = Oracle(y_i, c) ⁠ = scalar reward from an oracle or evaluator
-
-For a group of samples ⁠ y_1, ..., y_G ⁠, define normalized group advantage:
-$begin:math:display$
-A\_i \= \\frac\{r\_i \- \\mu\_G\}\{\\sigma\_G \+ \\varepsilon\}\,
-\\qquad
-\\mu\_G \= \\frac\{1\}\{G\}\\sum\_\{j\=1\}\^G r\_j
-$end:math:display$
-
-PepFlow already returns a modality-decomposed training loss. Define the weighted supervised loss:
-$begin:math:display$
-\\ell\_\{\\text\{PF\}\}\(y\, c\; \\theta\)
-\=
-\\lambda\_\{\\text\{trans\}\} \\ell\_\{\\text\{trans\}\}
-\+ \\lambda\_\{\\text\{rot\}\} \\ell\_\{\\text\{rot\}\}
-\+ \\lambda\_\{\\text\{bb\}\} \\ell\_\{\\text\{bb\}\}
-\+ \\lambda\_\{\\text\{seq\}\} \\ell\_\{\\text\{seq\}\}
-\+ \\lambda\_\{\\text\{ang\}\} \\ell\_\{\\text\{ang\}\}
-\+ \\lambda\_\{\\text\{tors\}\} \\ell\_\{\\text\{tors\}\}
-$end:math:display$
-
-Using the default config weights:
-$begin:math:display$
-\\ell\_\{\\text\{PF\}\}
-\=
-0\.5\\\,\\ell\_\{\\text\{trans\}\}
-\+ 0\.5\\\,\\ell\_\{\\text\{rot\}\}
-\+ 0\.25\\\,\\ell\_\{\\text\{bb\}\}
-\+ 1\.0\\\,\\ell\_\{\\text\{seq\}\}
-\+ 1\.0\\\,\\ell\_\{\\text\{ang\}\}
-\+ 0\.5\\\,\\ell\_\{\\text\{tors\}\}
-$end:math:display$
-
-This is useful because we can treat:
-$begin:math:display$
-s\\\theta\(y\,c\) \= \-\\ell\\{\\text\{PF\}\}\(y\,c\;\\theta\)
-$end:math:display$
-as a surrogate sample score.
-
----
-
-## 8. Post-training menu, from simplest to hardest
-
-## Option 0: Winner-only self-distillation (easiest sanity baseline)
-This is *not* GRPO, but it is the fastest sanity check.
-
-Procedure:
-1.⁠ ⁠For each condition ⁠ c ⁠, sample ⁠ G ⁠ candidates from the current model.
-2.⁠ ⁠Let the oracle pick the best one:
-   $begin:math:display$
-   y\^\\star \= \\arg\\max\_i r\_i
-   $end:math:display$
-3.⁠ ⁠Treat ⁠ y^\star ⁠ as a pseudo-target and train the model on it using the normal PepFlow loss.
-
-Objective:
-$begin:math:display$
-L\\{\\text\{winner\}\} \= \\ell\\{\\text\{PF\}\}\(y\^\\star\, c\; \\theta\)
-$end:math:display$
-
-Recommended anchored version:
-$begin:math:display$
-L \= \\ell\_\{\\text\{PF\}\}\(y\^\\star\, c\; \\theta\)
-\+ \\lambda\_\{\\text\{sup\}\} \\\,\\ell\_\{\\text\{PF\}\}\(y\_\{\\text\{gt\}\}\, c\; \\theta\)
-$end:math:display$
-
-Why do this:
-•⁠  ⁠almost zero RL engineering
-•⁠  ⁠tells us whether “sample best-of-G then imitate it” already helps
-•⁠  ⁠good debug stage before any clipped objective
-
-Why this may fail:
-•⁠  ⁠can collapse diversity
-•⁠  ⁠ignores relative quality among non-winners
-•⁠  ⁠not principled on-policy RL
-
-Use this if:
-•⁠  ⁠the model is expensive
-•⁠  ⁠memory is tight
-•⁠  ⁠we only need a very fast proof of concept
-
----
-
-## Option 1: Pairwise DPO-style flow matching (still simple, stronger than winner-only)
-This is the natural “energy/DPO-style” bridge.
-
-Procedure:
-1.⁠ ⁠For each condition ⁠ c ⁠, sample a small group.
-2.⁠ ⁠Use the oracle to pick a winner ⁠ y_w ⁠ and loser ⁠ y_l ⁠.
-3.⁠ ⁠Define a surrogate score from PepFlow’s weighted loss:
-   $begin:math:display$
-   s\\\theta\(y\,c\) \= \-\\ell\\{\\text\{PF\}\}\(y\,c\;\\theta\)
-   $end:math:display$
-4.⁠ ⁠Optimize a DPO-style objective.
-
-Objective:
-$begin:math:display$
-L\_\{\\text\{pair\}\}
-\=
-\-\\log \\sigma \\Big\(
-\\beta \\Big\[
-\\big\(s\\\theta\(y\_w\,c\)\-s\\\theta\(y\_l\,c\)\\big\)
-\-
-\\big\(s\\{\\theta\\{\\text\{ref\}\}\}\(y\w\,c\)\-s\\{\\theta\_\{\\text\{ref\}\}\}\(y\_l\,c\)\\big\)
-\\Big\]
-\\Big\)
-$end:math:display$
-
-Anchored version:
-$begin:math:display$
-L \= L\_\{\\text\{pair\}\} \+ \\lambda\_\{\\text\{sup\}\} \\\,\\ell\\{\\text\{PF\}\}\(y\\{\\text\{gt\}\}\, c\; \\theta\)
-$end:math:display$
-
-Why this is attractive:
-•⁠  ⁠simpler than GRPO
-•⁠  ⁠directly uses relative preference
-•⁠  ⁠does not require modeling stepwise trajectory ratios
-•⁠  ⁠very natural if the oracle can rank or compare samples
-
-Use this if:
-•⁠  ⁠we want something stronger than winner-only
-•⁠  ⁠we are not ready for full GRPO
-•⁠  ⁠we want a clean comparison against “energy-based DPO-like” methods
-
----
-
-## Option 2: Surrogate GRPO over final samples (recommended first actual GRPO)
-This is the recommended first real GRPO-style method for PepFlow.
-
-Core idea:
-•⁠  ⁠Do on-policy grouped rollouts as in GRPO.
-•⁠  ⁠But instead of deriving exact stepwise transition ratios for the mixed continuous+discrete flow process, use a *surrogate ratio* built from the PepFlow loss on the final samples.
-
-### Step 1: rollout
-For each condition ⁠ c ⁠, sample ⁠ G ⁠ candidates from ⁠ theta_old ⁠:
-$begin:math:display$
-y\i \\sim \\pi\\{\\theta\_\{\\text\{old\}\}\}\(\\cdot \\mid c\)\, \\quad i\=1\,\\dots\,G
-$end:math:display$
-
-### Step 2: reward
-Use the oracle to get rewards:
-$begin:math:display$
-r\_i \= \\text\{Oracle\}\(y\_i\, c\)
-$end:math:display$
-
-Then compute group-relative advantages:
-$begin:math:display$
-A\_i \= \\frac\{r\_i \- \\mu\_G\}\{\\sigma\_G \+ \\varepsilon\}
-$end:math:display$
-
-### Step 3: surrogate score
-For each final sample ⁠ y_i ⁠, compute a surrogate score from the PepFlow loss:
-$begin:math:display$
-s\\\theta\(y\_i\,c\) \= \-\\ell\\{\\text\{PF\}\}\(y\_i\,c\;\\theta\)
-$end:math:display$
-
-and similarly for the frozen rollout/reference model:
-$begin:math:display$
-s\\{\\theta\\{\\text\{old\}\}\}\(y\i\,c\) \= \-\\ell\\{\\text\{PF\}\}\(y\i\,c\;\\theta\\{\\text\{old\}\}\)
-$end:math:display$
-
-Define a sample-level ratio:
-$begin:math:display$
-\\rho\_i \= \\exp\\left\(s\_\\theta\(y\_i\,c\) \- s\_\{\\theta\_\{\\text\{old\}\}\}\(y\_i\,c\)\\right\)
-$end:math:display$
-
-### Step 4: GRPO clipped objective
-$begin:math:display$
-L\_\{\\text\{GRPO\-sur\}\}
-\=
-\-\\frac\{1\}\{G\}\\sum\_\{i\=1\}\^\{G\}
-\\min\\left\(
-\\rho\_i A\_i\,\\\;
-\\text\{clip\}\(\\rho\_i\, 1\-\\epsilon\, 1\+\\epsilon\) A\_i
-\\right\)
-$end:math:display$
-
-Anchored version:
-$begin:math:display$
-L
-\=
-L\_\{\\text\{GRPO\-sur\}\}
-\+ \\lambda\_\{\\text\{sup\}\} \\\,\\ell\_\{\\text\{PF\}\}\(y\_\{\\text\{gt\}\}\, c\; \\theta\)
-\+ \\beta \\\, D\(\\theta\, \\theta\_\{\\text\{ref\}\}\)
-$end:math:display$
-
-where ⁠ D ⁠ can be one of:
-•⁠  ⁠parameter L2 on trainable adapters
-•⁠  ⁠prediction matching to the reference model at random times
-•⁠  ⁠or simply the supervised ground-truth loss term
-
-### Why this is the recommended first GRPO
-•⁠  ⁠no need to derive exact transition densities
-•⁠  ⁠no need to backprop through the whole denoising chain
-•⁠  ⁠no need to store giant autograd graphs
-•⁠  ⁠works naturally with PepFlow’s existing multi-loss training API
-
-### Practical implementation notes
-•⁠  ⁠rollout with ⁠ torch.no_grad() ⁠
-•⁠  ⁠update with standard backward only on the surrogate loss
-•⁠  ⁠train only LoRA or a small subset of layers first
-•⁠  ⁠start with:
-  - known-backbone
-  - sequence-only or sequence+angles
-  - small ⁠ G ⁠
-  - small ⁠ num_steps ⁠
-
-This is probably the best balance between:
-•⁠  ⁠“actually GRPO-like”
-•⁠  ⁠and “realistically implementable on a course project timeline”
-
----
-
-## Option 3: Stepwise GRPO with a stochastic flow sampler (more faithful, harder)
-This is the “literal” GRPO route.
-
-Problem:
-•⁠  ⁠PepFlow’s current sampler is basically a deterministic flow / ODE-style iterative update.
-•⁠  ⁠Standard GRPO / PPO likes stochastic rollouts for exploration and for transition-level likelihood ratios.
-
-So we need a stochasticized sampler.
-
-### Stepwise view
-Let the trajectory be:
-$begin:math:display$
-x\\{t\_0\}\, x\\{t\1\}\, \\dots\, x\\{t\_T\}
-$end:math:display$
-
-A stochasticized update can look like:
-$begin:math:display$
-x\_\{k\+1\}
-\=
-x\k \+ f\\\theta\(x\_k\, t\_k\, c\)\\Delta t \+ g\_k \\sqrt\{\\Delta t\}\\\,\\epsilon\_k
-$end:math:display$
-
-where:
-•⁠  ⁠⁠ f_theta ⁠ is the learned flow update
-•⁠  ⁠⁠ g_k ⁠ is injected noise scale
-•⁠  ⁠⁠ epsilon_k ~ N(0, I) ⁠ for continuous parts
-•⁠  ⁠discrete sequence updates may still use sampling from logits
-
-### Group reward
-Still only use final reward:
-$begin:math:display$
-r\i \= \\text\{Oracle\}\(x\\{t\_T\}\^\{\(i\)\}\, c\)
-$end:math:display$
-and group advantage:
-$begin:math:display$
-A\_i \= \\frac\{r\_i \- \\mu\_G\}\{\\sigma\_G \+ \\varepsilon\}
-$end:math:display$
-
-### Stepwise ratio
-If we can write or approximate transition probabilities:
-$begin:math:display$
-\\rho\_\{i\,k\}
-\=
-\\frac\{
-p\\\theta\\big\(x\\{k\+1\}\^\{\(i\)\} \\mid x\_k\^\{\(i\)\}\, c\\big\)
-\}\{
-p\\{\\theta\\{\\text\{old\}\}\}\\big\(x\_\{k\+1\}\^\{\(i\)\} \\mid x\_k\^\{\(i\)\}\, c\\big\)
-\}
-$end:math:display$
-
-then optimize:
-$begin:math:display$
-L\_\{\\text\{step\-GRPO\}\}
-\=
-\-\\frac\{1\}\{GT\}
-\\sum\_\{i\=1\}\^\{G\}\\sum\_\{k\=0\}\^\{T\-1\}
-\\min\\left\(
-\\rho\_\{i\,k\} A\_i\,\\\;
-\\text\{clip\}\(\\rho\_\{i\,k\}\,1\-\\epsilon\,1\+\\epsilon\) A\_i
-\\right\)
-\+ \\beta \\\,\\text\{KL\}
-$end:math:display$
-
-### Important engineering rule
-Do *not* backprop through the full rollout graph.
-
-Instead:
-1.⁠ ⁠rollout with ⁠ torch.no_grad() ⁠
-2.⁠ ⁠cache minimal states
-3.⁠ ⁠recompute the needed quantities during the update step
-
-Otherwise memory will explode.
-
-### Why this is hard for PepFlow
-PepFlow has mixed modalities:
-•⁠  ⁠translation
-•⁠  ⁠rotation
-•⁠  ⁠sequence
-•⁠  ⁠angle / torsion
-
-So exact per-step transition modeling is much more annoying than in a simple continuous image flow.
-
-Use this only if:
-•⁠  ⁠surrogate GRPO clearly works and we want a stronger method
-•⁠  ⁠we are willing to patch the sampler carefully
-
----
-
-## Option 4: Branching / tree-structured GRPO (for efficiency if rollout is too expensive)
-If rollout is the bottleneck, branching is the next idea.
-
-Core idea:
-•⁠  ⁠multiple samples share a common prefix of denoising steps
-•⁠  ⁠only branch later
-•⁠  ⁠avoid recomputing the same early steps independently
-
-Naive rollout cost is roughly:
-$begin:math:display$
-\\text\{cost\}\_\{\\text\{naive\}\} \\propto G \\cdot T
-$end:math:display$
-
-A branching rollout can reduce this to something more like:
-$begin:math:display$
-\\text\{cost\}\_\{\\text\{branch\}\}
-\\propto
-T\\{\\text\{shared\}\} \+ B\\cdot\(T \- T\\{\\text\{shared\}\}\)
-$end:math:display$
-where ⁠ B < G ⁠ if shared prefixes are reused effectively.
-
-Practical version:
-1.⁠ ⁠sample a few initial noises
-2.⁠ ⁠roll a shared prefix
-3.⁠ ⁠branch into multiple continuations
-4.⁠ ⁠evaluate leaves with the oracle
-5.⁠ ⁠optionally prune bad branches early
-
-Why this is interesting:
-•⁠  ⁠much cheaper if ⁠ T ⁠ is large
-•⁠  ⁠especially helpful if the final reward is sparse and rollout dominates wall-clock time
-
-Use this only after:
-•⁠  ⁠we know rollout is the bottleneck
-•⁠  ⁠and simpler GRPO is already working
-
----
-
-## Option 5: Training-free inference steering baseline (must-have baseline)
-Even if we plan post-training, we should keep a training-free baseline.
-
-Target distribution idea:
-$begin:math:display$
-p\_\\alpha\(y \\mid c\)
-\\propto
-p\_\{\\theta\_0\}\(y \\mid c\)\\exp\(\\alpha r\(y\,c\)\)
-$end:math:display$
-
-We then approximately sample from this aligned distribution using:
-•⁠  ⁠best-of-⁠ N ⁠ reranking
-•⁠  ⁠resampling / SMC-like methods
-•⁠  ⁠reward guidance if the reward is differentiable enough
-
-Why this baseline matters:
-•⁠  ⁠sometimes it gives most of the gain without retraining
-•⁠  ⁠if GRPO is unstable or too expensive, this may still salvage the project
-•⁠  ⁠it is especially useful when oracle evaluation is expensive and we do not want full online updates yet
-
-Minimum inference-steering baseline:
-1.⁠ ⁠sample ⁠ N ⁠ candidates
-2.⁠ ⁠oracle score all ⁠ N ⁠
-3.⁠ ⁠keep the best
-
-Better inference-steering baseline:
-•⁠  ⁠iterative resampling / refinement during denoising
-•⁠  ⁠or test-time alignment / DAS-like search
-
----
-
-## 9. What *not* to do at first
-
-Do *not* start with:
-•⁠  ⁠full-sequence+structure co-design
-•⁠  ⁠exact stepwise GRPO
-•⁠  ⁠full-parameter finetuning
-•⁠  ⁠huge group sizes
-•⁠  ⁠huge denoising step counts
-•⁠  ⁠backprop through the whole denoising chain
-
-Do *not* assume the current sampler’s memory behavior is acceptable for RL.
-Profile first.
-
-Do *not* assume CLI booleans work correctly before patching them.
-
----
-
-## 10. Recommended implementation order
-
-### Phase A: repo sanity
-1.⁠ ⁠patch config paths
-2.⁠ ⁠patch ⁠ names.txt ⁠ path
-3.⁠ ⁠patch bool parsing
-4.⁠ ⁠add ⁠ return_traj=False ⁠
-5.⁠ ⁠run debug train
-6.⁠ ⁠run tiny inference
-7.⁠ ⁠run tiny PDB reconstruction
-
-### Phase B: profiling
-1.⁠ ⁠profile forward memory
-2.⁠ ⁠profile sample memory
-3.⁠ ⁠profile seq-only / seq+angles / full
-4.⁠ ⁠profile small vs large ⁠ num_steps ⁠
-5.⁠ ⁠write down the largest safe setting
-
-### Phase C: baselines
-1.⁠ ⁠best-of-⁠ N ⁠ reranking
-2.⁠ ⁠winner-only self-distillation
-3.⁠ ⁠pairwise DPO-style flow matching
-
-### Phase D: first actual GRPO
-1.⁠ ⁠surrogate GRPO over final samples
-2.⁠ ⁠LoRA or last-block training only
-3.⁠ ⁠known-backbone seq-only first
-4.⁠ ⁠then known-backbone seq+angles
-
-### Phase E: harder methods only if needed
-1.⁠ ⁠full PepFlow
-2.⁠ ⁠stochastic stepwise GRPO
-3.⁠ ⁠branching GRPO
-4.⁠ ⁠training-free inference steering comparison
-
----
-
-## 11. What to log for every experiment
-
-Always log:
-•⁠  ⁠condition ID
-•⁠  ⁠sampling mode (⁠ bb/ang/seq ⁠)
-•⁠  ⁠⁠ num_steps ⁠
-•⁠  ⁠⁠ num_samples ⁠
-•⁠  ⁠runtime
-•⁠  ⁠peak GPU memory
-•⁠  ⁠reward mean / std / max
-•⁠  ⁠diversity proxy
-•⁠  ⁠failure count
-•⁠  ⁠whether outputs can still be reconstructed to PDB cleanly
-
-For training runs also log:
-•⁠  ⁠supervised anchor loss
-•⁠  ⁠RL / DPO / GRPO objective
-•⁠  ⁠reward drift over time
-•⁠  ⁠collapse indicators:
-  - repeated sequences
-  - identical outputs across the group
-  - NaNs
-  - empty / invalid reconstructions
-
----
-
-## 12. If memory is worse than expected, adapt like this
-
-If VRAM is too high:
-1.⁠ ⁠switch to known-backbone seq-only
-2.⁠ ⁠reduce ⁠ num_steps ⁠
-3.⁠ ⁠reduce ⁠ num_samples ⁠
-4.⁠ ⁠use ⁠ return_traj=False ⁠
-5.⁠ ⁠use LoRA / PEFT only
-6.⁠ ⁠use gradient accumulation
-7.⁠ ⁠keep the reward terminal-only
-8.⁠ ⁠prefer DPO-style or surrogate GRPO over stepwise GRPO
-
-If even that is too heavy:
-•⁠  ⁠do inference steering first
-•⁠  ⁠or do winner-only / pairwise DPO before GRPO
-
----
-
-## 13. The single most likely first method to implement
-
-If nothing else is known yet, implement this first:
-
-*known-backbone, sequence-only PepFlow + surrogate GRPO over final samples*
-
-Concretely:
-•⁠  ⁠patch the repo
-•⁠  ⁠use official LMDB + checkpoint
-•⁠  ⁠set:
-  - ⁠ sample_bb=False ⁠
-  - ⁠ sample_ang=False ⁠
-  - ⁠ sample_seq=True ⁠
-•⁠  ⁠rollout with ⁠ torch.no_grad() ⁠
-•⁠  ⁠oracle-score grouped samples
-•⁠  ⁠compute group-normalized advantages
-•⁠  ⁠use the weighted PepFlow loss as a surrogate score
-•⁠  ⁠optimize a clipped GRPO objective plus a supervised anchor
-
-This is the best tradeoff between:
-•⁠  ⁠simplicity,
-•⁠  ⁠being genuinely post-training,
-•⁠  ⁠and not getting buried in stochastic flow math too early.
+  no_final_step_noise: true
+  save_visualisation: false
+
+reward:
+  type: composite
+  weights:
+    rmsd: 0.7
+    confidence: 0.3
+  confidence_mode: logit
+  invalid_reward: -1.0
+
+loss:
+  clip_eps: 0.2
+  lambda_supervised: 0.2
+  beta_ref: 0.05
+  max_score_delta: 20.0
+
+train:
+  device: cuda
+  mixed_precision: bf16
+  lr: 5.0e-5
+  grad_accum_steps: 4
+  max_updates: 300
+  max_grad_norm: 1.0
+
+logging:
+  log_every: 1
+
+checkpoint:
+  every: 25
+
+artifacts:
+  run_root: artifacts/runs
+```
+
+## Data flow, compute, validation, and safety boundaries
+
+### Data flow
+
+The RL stage should treat your canonical manifests as the source of truth and the rollout artifacts as ephemeral step-local data. DiffDock already expects batched tabular input and writes per-complex ranked outputs, so the correct bridge is: canonical manifest → rollout input batch → step-local generated sample manifest → reward join → grouped rollout batch → trainer step. citeturn5view4turn28view3
+
+Recommended artifact flow:
+
+```text
+train_manifest.json
+  -> choose batch of complex_ids
+  -> old policy rollout
+  -> rollouts/step_000123/generated_samples_manifest.json
+  -> join with canonical manifest on complex_id
+  -> rewards.csv / rollout.jsonl
+  -> grouped advantages
+  -> trainer computes new surrogate scores
+  -> optimizer step
+  -> checkpoints + step metrics
+  -> periodic eval hook on val_manifest.json
+```
+
+Use the original baseline `generated_samples_manifest.json` only for reward debugging, offline warm starts, or initial smoke tests. For actual PPO/GRPO training, each update should produce its own rollout manifest from the frozen old policy snapshot. citeturn29view2turn29view3
+
+### Recommended RL run layout
+
+```text
+artifacts/runs/{rl_run_id}/
+  config.yaml
+  config_snapshot.json
+  input_train_manifest.json
+  input_val_manifest.json
+  checkpoints/
+    latest.pt
+    best_val_reward.pt
+    best_val_rmsd.pt
+  rollouts/
+    step_000001/
+      generated_samples_manifest.json
+      rewards.csv
+      rollout.jsonl
+    step_000002/
+      ...
+  logs/
+    train_metrics.jsonl
+    system_metrics.jsonl
+    errors.log
+  eval/
+    step_000025/
+      metrics.json
+      generated_samples_manifest.json
+  summary.md
+```
+
+This avoids a metadata-file explosion while preserving reproducibility.
+
+### Compute and resource considerations
+
+DiffDock’s public README recommends GPU use for speed and notes that the first run precomputes SO(2)/SO(3) lookup tables. The public inference config also defaults to 20 inference steps and 10 samples per complex. Those details matter because rollout cost scales roughly with `(batch_complexes × samples_per_complex × inference_steps)` and surrogate PPO adds extra rescoring passes. citeturn5view4turn27view0
+
+Two DiffDock-specific caveats matter immediately. First, the public training path skips batch size 1 because of batchnorm, so tiny RL updates need either batch size ≥ 2, frozen/eval batchnorm, or careful accumulation logic. Second, the public `train.py` and `utils/training.py` do not show AMP/GradScaler usage, so mixed precision is an explicit extension to add rather than an existing capability to rely on. citeturn16view1turn25view0turn25view1turn25view2turn25view3
+
+Practical guidance:
+- Keep `save_visualisation: false` for RL. The public inference code can save full reverse-process PDB traces, but that is for debugging only and will massively increase storage use during on-policy training. citeturn28view3
+- Start with `samples_per_complex = 2-4`, not 10.
+- Freeze the confidence model.
+- Use LoRA or last-layer tuning first.
+- Treat larger-scale distributed training as a later phase; multi-GPU rollout workers are the easiest extension before DDP/FSDP.
+
+**Illustrative runtime expectations**
+- Smoke run: 1-2 complexes, `G=2`, 20 steps, single GPU → usually minutes.
+- Tiny run: 5-10 complexes, `G=4`, 20 steps, surrogate scoring → minutes to low tens of minutes per update cycle.
+- Full run: hundreds to thousands of complexes, `G>=4` → many GPU-hours to days unless rollout generation is sharded or heavily cached.
+
+### Evaluation metrics and validation protocol
+
+DiffDock’s public evaluator computes and saves arrays for RMSDs, confidences, run times, and names, then reports metrics such as `rmsds_below_2`, `rmsds_below_5`, `top5_rmsds_below_2`, `top10_rmsds_below_2`, and confidence-filtered variants. Those should define your validation protocol so post-trained checkpoints remain comparable to the baseline model. citeturn23view0turn23view1turn23view2turn23view3
+
+Compute at every eval hook:
+- RMSD mean, median, p25, p75
+- success@1 (`RMSD < 2Å`)
+- success@5 and success@10
+- confidence-filtered success@1
+- reward mean/std/max
+- reward-vs-RMSD correlation
+- valid-sample fraction
+- rollout time per complex
+
+Validation protocol:
+- fixed held-out validation split
+- fixed seed list for baseline vs post-trained comparisons
+- same `samples_per_complex` across models
+- report both raw top-k and confidence-filtered top-k metrics
+- track diversity collapse and invalid-sample fraction
+- explicitly monitor cases where confidence improves without RMSD improvement
+
+### Safety boundaries
+
+The RL wrapper should not own:
+- full benchmark evaluation logic
+- plotting or reporting notebooks
+- manifest or split mutation
+- rewrites of raw dataset files
+- joint confidence-model training in the first milestone
+
+The RL wrapper may:
+- read manifests
+- generate rollout artifacts inside run-local directories
+- compute rewards
+- update the score model
+- emit machine-readable metrics
+- invoke external eval hooks
+
+The 2024 DiffDock follow-up introduces confidence bootstrapping as a separate training paradigm based on the interaction of diffusion and confidence models. That is an important future direction, but it should be treated as a second-generation extension, not part of the initial Option2 migration. citeturn21view4
+
+## Migration checklist and draft RL_fine-tuning.md
+
+### Migration checklist
+
+| PepFlow function or idea | DiffDock equivalent | Status in public DiffDock code | What Codex must add |
+|---|---|---|---|
+| `FlowModel.sample(...)` grouped rollouts | `inference.py` + `samples_per_complex` | Available | `agent.generate_samples()` wrapper |
+| `FlowModel.forward(batch)` + loss dict | `loss_function(...)` + trainer loss dict | Available | Per-sample surrogate score adapter |
+| `sample_bb/sample_ang/sample_seq` | No direct modality switches | No analogue | Use smaller rollouts and fewer trainable params |
+| `sθ = -ℓPF(sample)` | `sθ = -ℓDD(sample)` | Partially available | Pseudo-batch scorer |
+| group-relative advantage | Same | Not packaged | `rollouts.compute_group_advantages()` |
+| clipped GRPO/PPO ratio | Same | Not packaged | `train_step_surrogate_ppo()` |
+| supervised anchor | Same | Available | Call standard DiffDock supervised loss each update |
+| reference regularizer | Frozen DiffDock reference | Not packaged | Prediction MSE or adapter-L2 |
+| exact stepwise transition ratio | Exact diffusion log-probs | Not exposed in public path | Defer behind `NotImplementedError` |
+| confidence oracle | Confidence model output | Available | Keep frozen; parse only |
+
+### Draft `docs/RL_fine-tuning.md`
+
+```markdown
+# DiffDock RL Fine-Tuning
+
+## Goal
+
+Migrate PepFlow Option2-style post-training to DiffDock.
+
+Initial supported modes:
+
+- supervised fine-tune (`sft`)
+- surrogate REINFORCE (`reinforce_surrogate`)
+- surrogate PPO (`ppo_surrogate`)
+
+Exact PPO over diffusion transition log-probabilities is deferred until the backend can emit per-step transition statistics.
+
+## Core idea
+
+For each complex:
+
+1. Sample a group of poses from a frozen old policy checkpoint.
+2. Score each final pose with terminal rewards.
+3. Normalize rewards within the group to get advantages.
+4. Compute either:
+   - exact log-prob gradients, if available, or
+   - a surrogate score `s_theta = -ell_DD`.
+5. Update the current score model with:
+   - RL loss
+   - supervised anchor loss
+   - frozen-reference regularization
+
+## Non-goals
+
+This package does not own:
+
+- benchmark evaluation
+- plotting
+- dataset rebuilding
+- split mutation
+- confidence-model training in the first milestone
+
+## File layout
+
+- `src/rl/config.py`
+- `src/rl/types.py`
+- `src/rl/data.py`
+- `src/rl/rewards.py`
+- `src/rl/agent.py`
+- `src/rl/rollouts.py`
+- `src/rl/train.py`
+- `src/rl/utils.py`
+- `src/pipeline/run_posttraining.py`
+- `configs/rl/*.yaml`
+
+## Required inputs
+
+- train and val manifests
+- DiffDock score-model checkpoint
+- optional confidence-model checkpoint
+- ground-truth ligand poses for RMSD-based rewards
+- rollout artifacts written under the current RL run directory
+
+## Reward modes
+
+Supported rewards:
+
+- RMSD-based
+- docking-score-based
+- confidence-based
+- composite
+
+Each reward returns a `RewardBreakdown`:
+- `total`
+- component values
+- `valid`
+- `reason`
+
+## Training modes
+
+### SFT
+
+Use DiffDock’s supervised loss only.
+Purpose: verify model loading, optimizer, checkpointing, metrics, and val-hook wiring.
+
+### Surrogate REINFORCE
+
+Use grouped on-policy rollouts.
+If exact log-probs are unavailable, use:
+- terminal reward advantages
+- surrogate sample score `s_theta = -ell_DD`
+
+### Surrogate PPO
+
+Cache old policy rollouts and old surrogate scores.
+Use a clipped ratio:
+`rho = exp(clip(s_new - s_old, -delta, delta))`
+
+Then optimize:
+`min(rho * A, clip(rho, 1-eps, 1+eps) * A)`
+
+## Artifacts
+
+Each RL run should write:
+
+artifacts/runs/{run_id}/
+- config.yaml
+- config_snapshot.json
+- input_train_manifest.json
+- input_val_manifest.json
+- checkpoints/
+- rollouts/
+- logs/
+- eval/
+- summary.md
+
+Each rollout step should write:
+- `generated_samples_manifest.json`
+- `rewards.csv`
+- `rollout.jsonl`
+
+## Evaluation hook contract
+
+The trainer may call an external evaluation hook.
+The hook must:
+- accept a checkpoint path
+- run on a fixed val manifest
+- return a metrics dict
+- write outputs only under the current RL run directory
+
+## Initial defaults
+
+Recommended first run:
+
+- trainable mode: `last_layers` or `lora`
+- reward: `rmsd` or `rmsd + confidence`
+- samples per complex: `4`
+- inference steps: `20`
+- actual steps: `19`
+- save_visualisation: `false`
+- batch_complexes: `2`
+
+## Guardrails
+
+- do not train from one permanently stale baseline manifest
+- do not backprop through reward code
+- do not mutate canonical manifests
+- do not hide backend failures
+- fail clearly if exact PPO is requested without log-prob support
+```
+
+## Prioritized roadmap
+
+```mermaid
+gantt
+    title DiffDock RL migration milestones
+    dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
+
+    section Foundation
+    Config, types, data bridge        :a1, 2026-05-04, 5d
+    Rewards and reward tests          :a2, after a1, 5d
+
+    section Backend
+    DiffDock agent wrapper            :b1, after a2, 7d
+    Step-local rollout collection     :b2, after b1, 5d
+
+    section Training
+    SFT smoke path                    :c1, after b2, 5d
+    Surrogate REINFORCE               :c2, after c1, 7d
+    Surrogate PPO                     :c3, after c2, 7d
+
+    section Validation
+    Eval-hook integration             :d1, after c3, 5d
+    Tiny real dataset RL smoke run    :d2, after d1, 5d
+
+    section Advanced
+    Exact PPO exploration             :e1, after d2, 7d
+```
+
+### Milestones and tests
+
+**Foundation**
+- Deliverables: `config.py`, `types.py`, `data.py`, `rewards.py`
+- Tests: config parsing, CSV export, manifest join, RMSD/confidence reward edge cases
+
+**Backend**
+- Deliverables: `agent.py`, checkpoint I/O, structured sample manifests
+- Tests: mock backend load, sample schema, checkpoint roundtrip, surrogate-score shape test
+
+**SFT smoke**
+- Deliverable: supervised training loop on tiny dataset
+- Tests: one optimizer step changes trainable params, resume works, eval hook fires
+
+**Surrogate REINFORCE**
+- Deliverable: on-policy grouped rollouts with group-normalized advantages
+- Tests: advantage normalization zero-mean per group, invalid group handling, reward logs produced
+
+**Surrogate PPO**
+- Deliverable: cached old-score rollout buffer + clipped ratio updates
+- Tests: ratio clipping finite, multiple PPO epochs reuse rollout buffer safely, checkpoint-on-failure works
+
+**Tiny real RL smoke**
+- Deliverable: full end-to-end run on 5-10 real complexes
+- Tests: artifacts created, rewards computed, checkpoints saved, val metrics returned
+
+**Exact PPO exploration**
+- Deliverable: explicit backend instrumentation plan for transition statistics
+- Tests: exact mode raises helpful `NotImplementedError` until implemented; later, exact log-prob tensors shape-match trajectory batches
+
+## Open questions and limitations
+
+The main unresolved implementation detail is **how exactly to build a stable per-sample pseudo-batch for DiffDock surrogate scoring** against generated poses in your pinned local checkout. The public repo exposes the native loss components and the non-mean loss path, which is why the surrogate approach is plausible, but the exact wrapper code depends on how you import and reuse DiffDock’s preprocessing and graph construction in your environment. citeturn17view0turn17view1
+
+A second limitation is that this report assumes there is **no stable public exact log-prob API** for DiffDock reverse-diffusion transitions in your target checkout. If your local fork already exposes per-step transition statistics, exact PPO can move earlier in the roadmap. Otherwise, surrogate REINFORCE and surrogate PPO are the right first methods.

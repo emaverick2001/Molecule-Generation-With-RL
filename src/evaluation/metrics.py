@@ -189,6 +189,11 @@ def aggregate_topk_metrics(
         min(record.rmsd for record in complex_records if record.rmsd is not None)
         for complex_records in grouped.values()
     ]
+    outlier_threshold = 10.0
+    num_rmsd_gt_10 = sum(
+        record.rmsd is not None and record.rmsd > outlier_threshold
+        for record in valid_records
+    )
 
     aggregate = {
         "num_complexes": len({record.complex_id for record in metric_records}),
@@ -203,6 +208,13 @@ def aggregate_topk_metrics(
         ),
         "best_of_n_mean_rmsd": (
             round(mean(best_rmsd_by_complex), 6) if best_rmsd_by_complex else None
+        ),
+        "median_best_rmsd": (
+            round(median(best_rmsd_by_complex), 6) if best_rmsd_by_complex else None
+        ),
+        "num_rmsd_gt_10": num_rmsd_gt_10,
+        "fraction_rmsd_gt_10": (
+            round(num_rmsd_gt_10 / len(valid_records), 6) if valid_records else None
         ),
     }
 

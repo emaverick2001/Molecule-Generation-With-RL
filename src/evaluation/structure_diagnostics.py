@@ -28,6 +28,7 @@ class StructureDiagnosticRecord:
     generated_atom_count: int | None
     input_reference_centroid_distance: float | None
     generated_reference_centroid_distance: float | None
+    warning: str | None
     valid: bool
     error: str | None = None
 
@@ -52,6 +53,7 @@ def build_structure_diagnostics(
     generated_records: list[GeneratedPose],
     *,
     remove_hs: bool = True,
+    generated_centroid_warning_threshold: float = 10.0,
 ) -> list[StructureDiagnosticRecord]:
     generated_by_complex: dict[str, list[GeneratedPose]] = {}
 
@@ -117,6 +119,7 @@ def build_structure_diagnostics(
                         input_reference_centroid_distance
                     ),
                     generated_reference_centroid_distance=None,
+                    warning=None,
                     valid=not base_errors,
                     error="; ".join(base_errors) if base_errors else "no generated pose",
                 )
@@ -141,6 +144,18 @@ def build_structure_diagnostics(
             except (FileNotFoundError, ValueError, RuntimeError) as error:
                 errors.append(str(error))
 
+            warning = None
+            if (
+                generated_reference_centroid_distance is not None
+                and generated_reference_centroid_distance
+                > generated_centroid_warning_threshold
+            ):
+                warning = (
+                    "generated/reference centroid distance "
+                    f"{generated_reference_centroid_distance:.3f} "
+                    f"> {generated_centroid_warning_threshold:.3f}"
+                )
+
             diagnostics.append(
                 StructureDiagnosticRecord(
                     complex_id=record.complex_id,
@@ -159,6 +174,7 @@ def build_structure_diagnostics(
                     generated_reference_centroid_distance=_safe_round(
                         generated_reference_centroid_distance
                     ),
+                    warning=warning,
                     valid=not errors,
                     error="; ".join(errors) if errors else None,
                 )
@@ -171,6 +187,7 @@ def run_structure_diagnostics(
     run_dir: str | Path,
     output_csv_path: str | Path | None = None,
     remove_hs: bool = True,
+    generated_centroid_warning_threshold: float = 10.0,
 ) -> list[StructureDiagnosticRecord]:
     run_dir = Path(run_dir)
     input_records = _load_input_records(run_dir / "input_manifest.json")
@@ -181,6 +198,7 @@ def run_structure_diagnostics(
         input_records=input_records,
         generated_records=generated_records,
         remove_hs=remove_hs,
+        generated_centroid_warning_threshold=generated_centroid_warning_threshold,
     )
 
     if output_csv_path is not None:

@@ -11,6 +11,7 @@ Options:
   --num-complexes N         Number of complexes to sample. Default: 5
   --seed N                  Random seed. Default: 42
   --output-root DIR         Normalized real complex root. Default: data/raw/pdbbind_real
+  --exclude-ids-file PATH   IDs to exclude from random sampling. Default: data/processed/diffdock/splits/exclude_ids.txt
   --baseline-config PATH    Baseline config. Default: configs/diffdock/tiny_real.yaml
   --package-mode MODE       key or full. Default: key
   --package-output-dir DIR  Output dir for packaged archive. Default: packaged_runs
@@ -30,6 +31,7 @@ SOURCE="data/raw/pdbbind/P-L"
 NUM_COMPLEXES="5"
 SEED="42"
 OUTPUT_ROOT="data/raw/pdbbind_real"
+EXCLUDE_IDS_FILE="data/processed/diffdock/splits/exclude_ids.txt"
 BASELINE_CONFIG="configs/diffdock/tiny_real.yaml"
 PACKAGE_MODE="key"
 PACKAGE_OUTPUT_DIR="packaged_runs"
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output-root)
       OUTPUT_ROOT="$2"
+      shift 2
+      ;;
+    --exclude-ids-file)
+      EXCLUDE_IDS_FILE="$2"
       shift 2
       ;;
     --baseline-config)
@@ -106,7 +112,8 @@ uv run python scripts/create_tiny_real_pdbbind.py \
   --random \
   --num-complexes "$NUM_COMPLEXES" \
   --seed "$SEED" \
-  --output-root "$OUTPUT_ROOT"
+  --output-root "$OUTPUT_ROOT" \
+  --exclude-ids-file "$EXCLUDE_IDS_FILE"
 
 RUNS_BEFORE="$(mktemp)"
 RUNS_AFTER="$(mktemp)"
@@ -135,6 +142,9 @@ echo "==> Detected run directory: $NEW_RUN_DIR"
 
 echo "==> Running evaluation"
 ./scripts/run_evaluation.sh "$NEW_RUN_DIR"
+
+echo "==> Running structure diagnostics"
+./scripts/diagnose_run_structures.py "$NEW_RUN_DIR"
 
 if [[ "$SKIP_PACKAGE" == "false" ]]; then
   echo "==> Packaging run artifacts"

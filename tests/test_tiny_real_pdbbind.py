@@ -5,6 +5,7 @@ import sys
 from scripts.create_tiny_real_pdbbind import (
     create_tiny_real_pdbbind,
     discover_complex_ids,
+    read_excluded_complex_ids,
     sample_complex_ids,
 )
 
@@ -123,6 +124,31 @@ def test_discover_and_sample_complex_ids_are_deterministic(tmp_path):
     )
 
 
+def test_sample_complex_ids_respects_excluded_complex_ids(tmp_path):
+    source = tmp_path / "pdbbind"
+    for complex_id in ["1a30", "2xyz", "3def", "4ghi", "5jkl", "6mno"]:
+        _write_complex(source, complex_id)
+
+    sampled = sample_complex_ids(
+        source,
+        sample_size=5,
+        seed=42,
+        excluded_complex_ids={"1a30"},
+    )
+
+    assert "1a30" not in sampled
+    assert len(sampled) == 5
+
+
+def test_read_excluded_complex_ids_ignores_comments_and_missing_default(tmp_path):
+    missing_path = tmp_path / "missing.txt"
+    exclude_path = tmp_path / "exclude_ids.txt"
+    exclude_path.write_text("# bad IDs\n1HK5\n\n4bo2\n", encoding="utf-8")
+
+    assert read_excluded_complex_ids(missing_path) == set()
+    assert read_excluded_complex_ids(exclude_path) == {"1hk5", "4bo2"}
+
+
 def test_create_tiny_real_pdbbind_script_can_randomly_sample(tmp_path):
     source = tmp_path / "pdbbind"
     for complex_id in ["1a30", "2xyz", "3def", "4ghi", "5jkl", "6mno"]:
@@ -151,4 +177,38 @@ def test_create_tiny_real_pdbbind_script_can_randomly_sample(tmp_path):
 
     assert "Selected complex IDs" in result.stdout
     assert "Prepared 5 real PDBBind complexes" in result.stdout
+    assert len(list(output_root.iterdir())) == 5
+
+
+def test_create_tiny_real_pdbbind_script_can_randomly_sample_with_exclusions(tmp_path):
+    source = tmp_path / "pdbbind"
+    for complex_id in ["1a30", "2xyz", "3def", "4ghi", "5jkl", "6mno"]:
+        _write_complex(source, complex_id)
+
+    exclude_path = tmp_path / "exclude_ids.txt"
+    exclude_path.write_text("1a30\n", encoding="utf-8")
+    output_root = tmp_path / "output" / "pdbbind_real"
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/create_tiny_real_pdbbind.py",
+            "--source",
+            str(source),
+            "--random",
+            "--num-complexes",
+            "5",
+            "--seed",
+            "42",
+            "--output-root",
+            str(output_root),
+            "--exclude-ids-file",
+            str(exclude_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not (output_root / "1a30").exists()
     assert len(list(output_root.iterdir())) == 5

@@ -2,7 +2,7 @@
 # Purpose:
 # - Run pretrained DiffDock on the test split
 # - Generate multiple candidate docking poses per complex
-# - Re-rank candidates using DiffDock confidence model
+# - Re-rank candidates using DiffDock confidence model as a baseline diagnostic
 # - Evaluate ranked poses with RMSD metrics
 # - Save artifacts for comparison vs non-reranked baseline and post-trained models
 
@@ -34,12 +34,16 @@ generation:
   # Number of candidate poses generated per complex before ranking.
   num_samples: 40
   # Enable confidence-based re-ranking of generated poses.
+  # Treat this as a baseline to compare against oracle/reward rerankers, not as
+  # the final reranking strategy.
   use_confidence_reranking: true
 
 reranking:
   # Use "confidence_score" once DiffDock confidence values are present in
   # generated_samples_manifest.json. Use "rewards_csv" for offline reranking
   # from an existing rewards.csv artifact.
+  # Confidence reranking is intentionally tracked as a baseline because recent
+  # top-10 runs show it can miss the best-RMSD pose.
   reward_source: confidence_score
   confidence_transform: identity
   confidence_temperature: 1.0

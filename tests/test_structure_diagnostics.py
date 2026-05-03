@@ -117,7 +117,25 @@ def test_build_structure_diagnostics_reports_counts_and_centroids(tmp_path):
     assert row.generated_atom_count == 2
     assert row.input_reference_centroid_distance == 0.0
     assert row.generated_reference_centroid_distance == 2.0
+    assert row.warning is None
     assert row.valid is True
+
+
+def test_build_structure_diagnostics_warns_for_large_generated_centroid_shift(tmp_path):
+    record, generated_path = _write_complex(tmp_path)
+    generated_path.write_text(
+        _sdf([("C", 20.0, 0.0, 0.0), ("O", 21.0, 0.0, 0.0)]),
+        encoding="utf-8",
+    )
+
+    diagnostics = build_structure_diagnostics(
+        input_records=[record],
+        generated_records=[GeneratedPose("1abc", 0, str(generated_path))],
+        generated_centroid_warning_threshold=10.0,
+    )
+
+    assert diagnostics[0].warning is not None
+    assert "generated/reference centroid distance" in diagnostics[0].warning
 
 
 def test_save_structure_diagnostics_csv(tmp_path):
