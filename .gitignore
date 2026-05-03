@@ -2,6 +2,7 @@
 artifacts/
 data/
 packaged_runs/
+imported_runs/
 
 # Keep datasets and generated data ignored, but track the reusable DiffDock
 # failed-complex exclusion list.
