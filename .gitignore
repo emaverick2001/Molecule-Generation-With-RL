@@ -3,6 +3,18 @@ artifacts/
 data/
 packaged_runs/
 
+# Keep datasets and generated data ignored, but track the reusable DiffDock
+# failed-complex exclusion list.
+!data/
+data/*
+!data/processed/
+data/processed/*
+!data/processed/diffdock/
+data/processed/diffdock/*
+!data/processed/diffdock/splits/
+data/processed/diffdock/splits/*
+!data/processed/diffdock/splits/exclude_ids.txt
+
 # Local third-party model checkouts. Install with scripts/setup_diffdock.sh.
 external/
 
