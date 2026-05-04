@@ -1187,6 +1187,19 @@ gantt
 - Deliverable: full end-to-end run on 5-10 real complexes
 - Tests: artifacts created, rewards computed, checkpoints saved, val metrics returned
 
+Current one-complex smoke command:
+
+```bash
+SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_rl_posttraining_smoke.sh \
+  --seed 42 \
+  --include-inputs
+```
+
+This first smoke validates one real condition with grouped DiffDock samples,
+RMSD rewards, and per-complex advantages. It intentionally does not update
+DiffDock weights until the DiffDock agent wrapper and surrogate scoring path are
+implemented.
+
 **Exact PPO exploration**
 - Deliverable: explicit backend instrumentation plan for transition statistics
 - Tests: exact mode raises helpful `NotImplementedError` until implemented; later, exact log-prob tensors shape-match trajectory batches

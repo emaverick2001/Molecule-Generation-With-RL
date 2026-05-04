@@ -7,6 +7,11 @@ from pathlib import Path
 
 
 INPUT_FIELDS = ("protein_path", "ligand_path", "ground_truth_pose_path")
+MANIFEST_CANDIDATES = (
+    "input_manifest.json",
+    "input_train_manifest.json",
+    "input_val_manifest.json",
+)
 
 
 def _repo_relative_path(path_text: str, repo_root: Path) -> str:
@@ -27,37 +32,45 @@ def _repo_relative_path(path_text: str, repo_root: Path) -> str:
 def list_run_input_files(run_dir: str | Path, repo_root: str | Path = ".") -> list[str]:
     run_dir = Path(run_dir)
     repo_root = Path(repo_root)
-    manifest_path = run_dir / "input_manifest.json"
-
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"Input manifest not found: {manifest_path}")
-
-    with manifest_path.open("r", encoding="utf-8") as f:
-        records = json.load(f)
-
-    if not isinstance(records, list):
-        raise ValueError(f"Input manifest must contain a list: {manifest_path}")
 
     paths: list[str] = []
     seen: set[str] = set()
+    manifest_paths = [
+        run_dir / filename
+        for filename in MANIFEST_CANDIDATES
+        if (run_dir / filename).is_file()
+    ]
 
-    for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            raise ValueError(f"Manifest record {index} is not an object.")
+    if not manifest_paths:
+        candidates = ", ".join(MANIFEST_CANDIDATES)
+        raise FileNotFoundError(
+            f"No input manifest found in {run_dir}; expected one of: {candidates}"
+        )
 
-        for field in INPUT_FIELDS:
-            if field not in record:
-                raise ValueError(f"Manifest record {index} is missing {field}.")
+    for manifest_path in manifest_paths:
+        with manifest_path.open("r", encoding="utf-8") as f:
+            records = json.load(f)
 
-            relative_path = _repo_relative_path(str(record[field]), repo_root)
-            path = repo_root / relative_path
+        if not isinstance(records, list):
+            raise ValueError(f"Input manifest must contain a list: {manifest_path}")
 
-            if not path.is_file():
-                raise FileNotFoundError(f"{field} not found: {relative_path}")
+        for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                raise ValueError(f"Manifest record {index} is not an object.")
 
-            if relative_path not in seen:
-                seen.add(relative_path)
-                paths.append(relative_path)
+            for field in INPUT_FIELDS:
+                if field not in record:
+                    raise ValueError(f"Manifest record {index} is missing {field}.")
+
+                relative_path = _repo_relative_path(str(record[field]), repo_root)
+                path = repo_root / relative_path
+
+                if not path.is_file():
+                    raise FileNotFoundError(f"{field} not found: {relative_path}")
+
+                if relative_path not in seen:
+                    seen.add(relative_path)
+                    paths.append(relative_path)
 
     return paths
 

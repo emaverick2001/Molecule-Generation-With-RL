@@ -1,0 +1,41 @@
+# One-complex RL/posttraining smoke config.
+#
+# This consumes a completed one-complex DiffDock rollout run and validates:
+# generated samples -> RL examples -> RMSD rewards -> group advantages.
+# It does not update DiffDock weights yet.
+
+experiment:
+  name: diffdock_rl_smoke
+  model: diffdock
+  mode: posttraining_offline_reward_smoke
+  seed: 42
+
+algorithm:
+  name: offline_reward_debug
+  policy_mode: surrogate
+
+data:
+  # Override from the CLI or smoke script:
+  #   --source-run-dir artifacts/runs/<one_complex_top4_run_id>
+  source_run_dir: null
+
+reward:
+  type: composite
+  weights:
+    rmsd: 1.0
+    confidence: 0.0
+  sigma_angstrom: 2.0
+  max_rmsd: 10.0
+  invalid_reward: -1.0
+  confidence_mode: logit
+  confidence_temperature: 1.0
+
+rollout:
+  samples_per_complex: 4
+  advantage_normalization: zscore
+  min_valid_samples_per_complex: 2
+  invalid_group_action: zero
+
+artifacts:
+  run_root: artifacts/runs
+  run_tag: null

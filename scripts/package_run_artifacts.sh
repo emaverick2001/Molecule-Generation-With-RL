@@ -147,6 +147,8 @@ else
     -name "config.yaml" -o \
     -name "config_snapshot.json" -o \
     -name "input_manifest.json" -o \
+    -name "input_train_manifest.json" -o \
+    -name "input_val_manifest.json" -o \
     -name "validation_report.json" -o \
     -name "dataset_summary.json" -o \
     -name "preflight_report.json" -o \
@@ -163,8 +165,12 @@ else
     -name "reranking_summary.md" -o \
     -name "reranking_comparison.csv" -o \
     -name "reranking_comparison.json" -o \
+    -name "posttraining_summary.json" -o \
     -name "errors.log" -o \
     -name "logs" -o \
+    -name "rollouts" -o \
+    -name "checkpoints" -o \
+    -name "eval" -o \
     -name "generated_samples" -o \
     -name "raw_diffdock_outputs" \
   \) -print | sort > "$PATH_LIST_FILE"

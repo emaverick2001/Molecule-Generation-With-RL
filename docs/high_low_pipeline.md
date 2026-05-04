@@ -746,6 +746,16 @@ example_input = {
 		  posttraining_summary.json
 		```
 
+	- One-complex smoke path:
+		```bash
+		SMOKE_COMPLEX_ID=<real_pdbbind_id> ./scripts/run_rl_posttraining_smoke.sh \
+		  --seed 42 \
+		  --include-inputs
+		```
+	- This generates 4 DiffDock poses for one complex, evaluates them, runs the
+	  offline RL reward/advantage workflow, and packages both the rollout and
+	  posttraining smoke artifacts. It does not update DiffDock weights yet.
+
 3. What this validates
 	- Generated poses can be converted into RL examples.
 	- RMSD reward matches the evaluation path closely enough for training diagnostics.

@@ -43,6 +43,20 @@ def test_list_run_input_files_returns_manifest_structure_paths(tmp_path):
     ]
 
 
+def test_list_run_input_files_accepts_posttraining_train_manifest(tmp_path):
+    run_dir = _write_manifest_run(tmp_path)
+    input_manifest = run_dir / "input_manifest.json"
+    train_manifest = run_dir / "input_train_manifest.json"
+    train_manifest.write_text(input_manifest.read_text(encoding="utf-8"), encoding="utf-8")
+    input_manifest.unlink()
+
+    assert list_run_input_files(run_dir, repo_root=tmp_path) == [
+        "data/raw/pdbbind_real/1abc/protein.pdb",
+        "data/raw/pdbbind_real/1abc/ligand.sdf",
+        "data/raw/pdbbind_real/1abc/ligand_gt.sdf",
+    ]
+
+
 def test_package_run_artifacts_can_include_input_structures(tmp_path):
     run_dir = _write_manifest_run(tmp_path)
     output_dir = tmp_path / "packaged_runs"

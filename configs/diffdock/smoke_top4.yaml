@@ -1,0 +1,50 @@
+# One-complex real DiffDock rollout smoke test for RL reward debugging.
+
+experiment:
+  name: diffdock_smoke
+  model: diffdock
+  mode: rl_smoke_top4_baseline
+  seed: 42
+
+dataset:
+  name: pdbbind
+  split: smoke
+  manifest_path: data/processed/diffdock/manifests/smoke_manifest.json
+
+evaluation:
+  rmsd_threshold: 2.0
+
+generation:
+  backend: diffdock
+  num_samples: 4
+  use_confidence_reranking: false
+
+diffdock:
+  repo_dir: external/DiffDock
+  config_path: external/DiffDock/default_inference_args.yaml
+  timeout_seconds: 1200
+  preflight_filter:
+    enabled: true
+    remove_hs: true
+    min_protein_atoms: 1
+    min_protein_residues: 1
+    min_protein_chains: 1
+    max_ligand_protein_centroid_distance: 80.0
+    max_input_reference_centroid_distance: 2.0
+    fail_on_unsupported_residues: false
+  command_template:
+    - "{python_executable}"
+    - -m
+    - inference
+    - --config
+    - "{config_path}"
+    - --protein_path
+    - "{protein_path}"
+    - --ligand_description
+    - "{ligand_path}"
+    - --out_dir
+    - "{raw_output_dir}"
+    - --samples_per_complex
+    - "{num_samples}"
+    - --batch_size
+    - "1"
