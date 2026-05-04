@@ -464,18 +464,13 @@ example_input = {
 		- Each complex should get logs like:
 			- artifacts/runs/{run_id}/logs/1abc.stdout.logartifacts/runs/{run_id}/logs/1abc.stderr.log
 	6. Discover DiffDock-generated SDF outputs
-		- After each DiffDock run, the wrapper searches:
+		- After each DiffDock run, Codex should search:
 			- artifacts/runs/{run_id}/raw_diffdock_outputs/{complex_id}/
 		- for:
 			- *.sdf
-		- Parse DiffDock output names like:
-			- `rank1.sdf`
-			- `rank1_confidence-0.70.sdf`
-			- `rank10_confidence-1.85.sdf`
-		- Sort by numeric rank, not lexicographic filename order.
-		- Prefer `rankN_confidenceX.sdf` over `rankN.sdf` when both exist.
-		- Store parsed confidence values in `GeneratedPose.confidence_score`.
-		- Then copy the first `num_samples` ranked poses into your standardized folder:
+		- Use recursive search:
+			- sdf_paths = sorted(raw_output_dir.rglob("*.sdf"))
+		- Then copy the first num_samples into your standardized folder:
 			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_0.sdf
 			- artifacts/runs/{run_id}/generated_samples/{complex_id}_sample_1.sdf
 	7. Preserve your existing output contract
@@ -511,46 +506,39 @@ example_input = {
 			  backend: diffdock
 			  num_samples: 1
 			```
-	10. Add a script for real DiffDock baseline scripts/run_diffdock_smoke.sh
-	11. Add a script to test more complexes (5-10 complex mini manifest) scripts/run_diffdock_tiny.sh
-	12. Add a repeatable tiny real split builder
-		- `scripts/create_tiny_real_pdbbind.py`
-		- `configs/diffdock/tiny_real.yaml`
-		- `scripts/run_diffdock_tiny_real.sh`
-		- `scripts/run_tiny_real_pipeline.sh`
-		- Inputs:
-			- extracted real PDBBind source root
-			- five selected complex IDs, or random sampling with a fixed seed
-		- Outputs:
-			- `data/raw/pdbbind_real/{complex_id}/protein.pdb`
-			- `data/raw/pdbbind_real/{complex_id}/ligand.sdf`
-			- `data/raw/pdbbind_real/{complex_id}/ligand_gt.sdf`
-			- `data/processed/diffdock/splits/tiny_real.txt`
-			- `data/processed/diffdock/manifests/tiny_real_manifest.json`
-			- `data/processed/diffdock/manifests/tiny_real_validation_report.json`
-	13. Completion Criteria 
-		1. `run_baseline.py` loads the mini manifest  
-		2. it creates generated sample records for every complex  
-		3. it saves `generated_samples_manifest.json`  
-		4. generated sample paths are run-specific  
-		5. tests pass  
-		6. the pipeline can be switched from dry-run generation to DiffDock generation without changing the dataset loader
-		7. able to run ./scripts/run_diffdock_smoke.sh
-		8. run folder contains 
-			```
-			config.yaml
-			config_snapshot.json
-			errors.log
-			input_manifest.json
-			dataset_summary.json
-			validation_report.json
-			raw_diffdock_outputs/
-			logs/
-			generated_samples/
-			generated_samples_manifest.json
-			summary.md
-			```
-		9. Next steps 
+	10. **Fix DiffDock output standardization before multi-sample runs**
+		- [[PyTorch]]
+		- [[CUDA]]
+	    - Current raw DiffDock output includes files like rank1.sdf, rank1_confidence-0.70.sdf, rank10_confidence-1.85.sdf.
+	    - Before num_samples > 1, we should parse rankN_confidenceX.sdf correctly, sort by numeric rank, and populate confidence_score.
+	    - Otherwise lexicographic sorting can accidentally pick rank10 before rank2.
+	11. **Run evaluation on the successful one-complex smoke run**
+	    - Confirm pose_metrics.csv has valid=True.
+	    - Confirm metrics.json now contains real evaluation metrics, not only the placeholder baseline metrics.
+	12. **Run real DiffDock baseline on the 5-complex split**
+	    - Pick 5 real complex IDs from your extracted PDBBind folder.
+	    - Build a tiny_real_manifest.json pointing to data/raw/pdbbind_real/....
+	    - Start with num_samples: 1.
+	    - Use a new config like configs/diffdock/tiny_real.yaml.
+	    - Avoid --exist-ok unless you intentionally want to overwrite the same dated run folder.
+	    - After generation:
+	        `./scripts/run_evaluation.sh artifacts/runs/<new_run_id>`
+		1. **Package input structures with run artifacts**  
+		    Current package does not include data/raw/pdbbind_real/..., so local debugging cannot recompute RMSD or inspect reference ligands. Add an option like --include-inputs to package protein.pdb, ligand.sdf, and ligand_gt.sdf for each manifest complex.
+		2. **Add a structure diagnostic script**  
+		    For each complex, report ligand atom count, reference atom count, generated atom count, input/reference centroid distance, generated/reference centroid distance, and protein atom count. This will quickly tell us whether high RMSD is from bad predictions or bad coordinate/reference setup.
+		3. **Stop writing fake rewards.csv for real DiffDock runs**  
+		    Either omit it before evaluation or generate rewards from pose_metrics.csv after evaluation. Right now it is misleading.
+		4. **Filter bad complexes before running DiffDock**  
+		    Add a preflight filter for complexes that are likely to trigger No edges and no nodes: empty receptor graph, bad protein parse, ligand/protein too far apart, missing usable chains, or unsupported residues.
+		5. **Run num_samples: 10 before scaling dataset size**  
+		    Your raw DiffDock outputs already include ranks 1-10 for successful complexes, but your standardized manifest only kept sample 0 because config used num_samples: 1. The next meaningful experiment should evaluate top-10/reranking behavior, not more complexes yet.
+	13. **Only then increase samples per complex**
+	    - Go from num_samples: 1 to num_samples: 5, then 10.
+	    - After confidence parsing is implemented, run:
+	        `./scripts/run_reranking.sh artifacts/runs/<run_id>`
+	    - Then evaluate the reranked manifest:
+	        `uv run python -m src.pipeline.run_evaluation \ --run-dir artifacts/runs/<run_id> \ --generated-manifest artifacts/runs/<run_id>/reranked_generated_samples_manifest.json`
 ##### **3. Evaluation**
 - This phase evaluates generated poses against the ground-truth bound ligand pose using an **offline** metric. For the MVP, the core metric should be symmetry-aware ligand RMSD, with top-k success thresholds matching common DiffDock reporting conventions. The original DiffDock paper reports success at RMSD < 2 Å, and the current repository evaluator computes `rmsds_below_2`, `rmsds_below_5`, `top5_rmsds_below_2`, and `top10_rmsds_below_2`, along with centroid-distance summaries. 
 - RDKit’s documentation makes the intended RMSD choice clear. `SDMolSupplier` is the standard way to read SDF sets and should be checked for `None` values; `MolFromMolFile()` returns `None` on parse failure; and `rdMolAlign.CalcRMS()` is documented as useful for comparing docking poses and co-crystallized ligands because it computes RMSD in place without pre-aligning the probe to the reference. RDKit also warns that symmetry-aware matching can suffer combinatorial explosion when hydrogens are present. DiffDock’s own evaluator removes hydrogens before symmetry-aware RMSD and then reports RMSD, centroid-distance, and top-k summaries. That is the rationale for the default MVP design here: `CalcRMS`, symmetry-aware, `remove_hs=True`, and top-k aggregation at 2 Å and 5 Å.
@@ -646,40 +634,8 @@ example_input = {
 8. configs/diffdock/evaluation.yaml
 ##### **4. Confidence Reranking**
 - This phase converts the per-pose DiffDock confidence signal into a run-local reward artifact that is downstream-friendly, reproducible, and separate from evaluation.
-- Implementation status: offline reranking is implemented. It can rerank a completed run directory from either:
-	- confidence scores stored in `generated_samples_manifest.json`
-	- an existing `rewards.csv` artifact
-- Run command:
-	```bash
-	./scripts/run_reranking.sh artifacts/runs/{run_id}
-	```
-- For dry-run artifacts that do not contain confidence scores, use a config without a `reranking.reward_source` override so the stage defaults to `rewards_csv`:
-	```bash
-	./scripts/run_reranking.sh artifacts/runs/{run_id} --config configs/diffdock/evaluation.yaml
-	```
-- Outputs:
-	```text
-	artifacts/runs/{run_id}/
-	├── reranked_generated_samples_manifest.json
-	├── reranking_summary.json
-	└── reranking_summary.md
-	```
-- To evaluate the reranked order:
-	```bash
-	uv run python -m src.pipeline.run_evaluation \
-	  --run-dir artifacts/runs/{run_id} \
-	  --generated-manifest artifacts/runs/{run_id}/reranked_generated_samples_manifest.json
-	```
 ###### **Key Components / Deliverables**
-1. src/rewards/confidence_reward.py
-	1. `require_confidence_scores(...)`
-		- raise `ValueError` if any pose has `confidence_score is None`.
-	2. `transform_confidence_score(...)`
-		- `identity` → return raw score
-		- `sigmoid` → `1 / (1 + exp(-score / temperature))`
-	3. `build_confidence_reward_records(...)`
-		- Convert `GeneratedPose.confidence_score` values into `RewardRecord` rows with `reward_type="confidence"`.
-2. src/evaluation/reranking.py
+1. src/evaluation/reranking.py
 	1. `build_reward_lookup(...)`
 		```python
 		def build_reward_lookup(
@@ -723,53 +679,102 @@ example_input = {
 		```python
 		def load_reranked_manifest(path: Union[str, Path]) -> list["RerankedPose"]:
 		```
-3. src/pipeline/run_reranking.py
-	- Loads `generated_samples_manifest.json`.
-	- Loads `rewards.csv` or derives confidence rewards from generated-pose confidence scores.
-	- Writes `reranked_generated_samples_manifest.json`.
-	- Writes `reranking_summary.json`.
-	- Writes `reranking_summary.md`.
-4. tests/test_reranking.py
+2. src/pipeline/run_reranking.py
+3. tests/test_reranking.py
 	- reranking sorts descending reward within each complex
 	- ties break by `sample_id`
 	- missing reward row raises clear error
 	- reranked manifest roundtrip works
 	- reranking does not duplicate or rename pose files
 	- confidence-only reranking is idempotent if original manifest is already sorted by confidence
-	- evaluation uses manifest order for rank, so reranked manifests affect top-k metrics
-5. scripts/run_reranking.sh
-6. configs/diffdock/rerank_baseline.yaml
-7. Completion Criteria
-	1. reranking can consume a generated-samples manifest and reward records
-	2. reranking preserves original SDF paths without copying or renaming files
-	3. reranking writes a run-local reranked manifest
-	4. missing confidence or reward rows fail with clear errors
-	5. evaluation can consume the reranked manifest and respect reranked order
-	6. tests pass
+4. scripts/run_reranking.sh
+5. configs/diffdock/rerank_baseline.yaml
 ##### **5. Post-Training / RL Setup**
 ###### **Key Components / Deliverables**
-8. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-9. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
-##### **7. Comparison + Reporting**
+1. Build The RL Data Layer  
+	1. Create src/rl/ with:
+		- `src/rl/ config.py types.py data.py rewards.py rollouts.py agent.py train.py utils.py`
+		- Start with types.py, data.py, and rewards.py. These do not require DiffDock model training yet.
+		- Core objects:
+			- RLExample: one generated pose joined to its protein, ligand, reference pose, rank, confidence, source run.
+			- RewardBreakdown: RMSD reward, confidence reward, docking reward later, total reward.
+			- RolloutRecord: grouped sample + reward + advantage + old policy score.
+2. Implement Reward Computation First  
+	- Use your existing evaluation code as the source of truth.
+	- Initial reward `r_rmsd = exp(-RMSD / sigma)`
+	- Use sigma_angstrom = 2.0.
+	- For now:
+		- Primary reward: RMSD-based reward.
+		- Optional auxiliary: confidence reward.
+		- Do not use confidence alone. Your baseline runs show it does not improve ranking.
+	- This lets you reuse existing baseline artifacts to debug rewards before training.
+3. Convert Existing Baseline Runs Into Offline RL Debug Data  
+	1. Before on-policy RL, write a utility that takes `input_manifest.json generated_samples_manifest.json pose_metrics.csv` and produces `rollout.jsonl rewards.csv advantage_summary.json`
+		- This is not real PPO training yet, but it verifies:
+			- sample grouping by complex
+			- reward computation
+			- per-complex reward normalization
+			- reward vs RMSD correlation
+			- bad-pose/outlier handling
+4. Add Group Advantage Logic  
+	- For each complex, normalize rewards across its generated samples `A_i = (r_i - group_mean) / (group_std + eps)`
+	- This is the GRPO-style part from the doc. It matters because rewards/confidence are not comparable across complexes.
+5. Create The Posttraining Run Skeleton  
+	- Implement src/pipeline/run_posttraining.py so every RL run writes: `artifacts/runs/{rl_run_id}/ config.yaml config_snapshot.json input_train_manifest.json input_val_manifest.json rollouts/ checkpoints/ logs/ eval/ summary.md`
+	- Do not train from one stale generated_samples_manifest.json long term. Real RL should create step-local rollouts.
+6. Implement Agent Wrapper Last  
+	- Only after reward/data plumbing works, build src/rl/agent.py.
+	- The doc’s recommended order is:
+		1. mock backend
+		2. DiffDock checkpoint loading
+		3. supervised loss smoke test
+		4. rollout generation
+		5. surrogate scoring
+		6. checkpoint save/load
+	- Do not start with exact PPO. Start with a surrogate score:
+	- `s_theta = - DiffDock_loss`
+7. Training Order  
+	- Recommended training progression:
+		1. **SFT sanity run**  
+		    Prove model load, loss, optimizer, checkpointing, and evaluation hook work.
+		2. **Offline reward debugging**  
+		    Use your existing top-10 baseline outputs.
+		3. **REINFORCE surrogate**  
+		    First reward-driven update.
+		4. **Surrogate PPO**  
+		    Use old policy snapshots, grouped rollouts, clipped score ratios.
+		5. **Exact PPO later**  
+		    Only if you instrument DiffDock sampler log-probs.
+##### **6. Comparison + Reporting**
 - Compare baseline vs post-trained model
 ###### **Key Components / Deliverables**
-1. [Key implementation steps / Key Data Manipulations / Key Components for this stage]
-2. [key component name]
-	1. [steps to implement key component/ tests to run for validation]
-##### **8. Extension 1: Better Reward Functions**
+8. [Key files to implement/algorithms/manipulations/components/modules]
+	1. [Key functions to implement/Key considerations/Key behavior]
+##### **7. Extension 1: Better Reward Functions**
 - docking score
 - confidence score
 - energy-based score
 - composite reward
-##### **9. Extension 2: Inference-Time Guidance Baseline**
+###### **Key Components / Deliverables**
+8. [Key files to implement/algorithms/manipulations/components/modules]
+	1. [Key functions to implement/Key considerations/Key behavior]
+##### **8. Extension 2: Inference-Time Guidance Baseline**
 - compare post-training vs sampling-time steering
-##### **10. Extension 3: PepFlow**
+###### **Key Components / Deliverables**
+8. [Key files to implement/algorithms/manipulations/components/modules]
+	1. [Key functions to implement/Key considerations/Key behavior]
+##### **9. Extension 3: PepFlow**
 - repeat structure for:
     - known-backbone peptide design
     - full peptide generation
-##### **11. Extension 4: Diagnostics**
+###### **Key Components / Deliverables**
+8. [Key files to implement/algorithms/manipulations/components/modules]
+	1. [Key functions to implement/Key considerations/Key behavior]
+##### **10. Extension 4: Diagnostics**
 - reward vs RMSD correlation
 - diversity preservation
 - failure cases
 - reward hacking detection
+###### **Key Components / Deliverables**
+8. [Key files to implement/algorithms/manipulations/components/modules]
+	1. [Key functions to implement/Key considerations/Key behavior]
