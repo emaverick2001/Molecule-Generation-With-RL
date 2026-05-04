@@ -16,7 +16,7 @@ from src.utils.schemas import ComplexInput
 
 
 DEFAULT_VALID_SPLITS = frozenset(
-    {"smoke", "mini", "tiny_real", "train", "val", "test"}
+    {"smoke", "mini", "tiny_real", "train", "val", "test", "main_eval"}
 )
 
 EXPECTED_EXTENSIONS = {
