@@ -691,60 +691,75 @@ example_input = {
 5. configs/diffdock/rerank_baseline.yaml
 ##### **5. Post-Training / RL Setup**
 ###### **Key Components / Deliverables**
-1. Build The RL Data Layer  
-	1. Create src/rl/ with:
-		- `src/rl/ config.py types.py data.py rewards.py rollouts.py agent.py train.py utils.py`
-		- Start with types.py, data.py, and rewards.py. These do not require DiffDock model training yet.
-		- Core objects:
-			- RLExample: one generated pose joined to its protein, ligand, reference pose, rank, confidence, source run.
-			- RewardBreakdown: RMSD reward, confidence reward, docking reward later, total reward.
-			- RolloutRecord: grouped sample + reward + advantage + old policy score.
-2. Implement Reward Computation First  
-	- Use your existing evaluation code as the source of truth.
-	- Initial reward `r_rmsd = exp(-RMSD / sigma)`
-	- Use sigma_angstrom = 2.0.
-	- For now:
-		- Primary reward: RMSD-based reward.
-		- Optional auxiliary: confidence reward.
-		- Do not use confidence alone. Your baseline runs show it does not improve ranking.
-	- This lets you reuse existing baseline artifacts to debug rewards before training.
-3. Convert Existing Baseline Runs Into Offline RL Debug Data  
-	1. Before on-policy RL, write a utility that takes `input_manifest.json generated_samples_manifest.json pose_metrics.csv` and produces `rollout.jsonl rewards.csv advantage_summary.json`
-		- This is not real PPO training yet, but it verifies:
-			- sample grouping by complex
-			- reward computation
-			- per-complex reward normalization
-			- reward vs RMSD correlation
-			- bad-pose/outlier handling
-4. Add Group Advantage Logic  
-	- For each complex, normalize rewards across its generated samples `A_i = (r_i - group_mean) / (group_std + eps)`
-	- This is the GRPO-style part from the doc. It matters because rewards/confidence are not comparable across complexes.
-5. Create The Posttraining Run Skeleton  
-	- Implement src/pipeline/run_posttraining.py so every RL run writes: `artifacts/runs/{rl_run_id}/ config.yaml config_snapshot.json input_train_manifest.json input_val_manifest.json rollouts/ checkpoints/ logs/ eval/ summary.md`
-	- Do not train from one stale generated_samples_manifest.json long term. Real RL should create step-local rollouts.
-6. Implement Agent Wrapper Last  
-	- Only after reward/data plumbing works, build src/rl/agent.py.
-	- The doc’s recommended order is:
-		1. mock backend
-		2. DiffDock checkpoint loading
-		3. supervised loss smoke test
-		4. rollout generation
-		5. surrogate scoring
-		6. checkpoint save/load
-	- Do not start with exact PPO. Start with a surrogate score:
-	- `s_theta = - DiffDock_loss`
-7. Training Order  
-	- Recommended training progression:
-		1. **SFT sanity run**  
-		    Prove model load, loss, optimizer, checkpointing, and evaluation hook work.
-		2. **Offline reward debugging**  
-		    Use your existing top-10 baseline outputs.
-		3. **REINFORCE surrogate**  
-		    First reward-driven update.
-		4. **Surrogate PPO**  
-		    Use old policy snapshots, grouped rollouts, clipped score ratios.
-		5. **Exact PPO later**  
-		    Only if you instrument DiffDock sampler log-probs.
+1. Implemented first RL scaffold
+	- `src/rl/types.py`
+		- `RLExample`: generated pose joined to protein, ligand, reference pose, rank, confidence, and source run.
+		- `RewardComponent` / `RewardBreakdown`: component-level and total rewards.
+		- `RolloutRecord`: grouped sample, reward, advantage, and future old-policy score fields.
+	- `src/rl/config.py`
+		- Loads and validates RL configs.
+		- Supports `offline_reward_debug` now.
+		- Explicitly blocks exact PPO until DiffDock sampler log-probs are available.
+	- `src/rl/data.py`
+		- Loads generated sample manifests.
+		- Joins generated poses to canonical complex manifests.
+		- Exports DiffDock CSV input if needed later.
+		- Writes/loads rollout JSONL manifests.
+	- `src/rl/rewards.py`
+		- RMSD reward: `r_rmsd = exp(-min(RMSD, max_rmsd) / sigma)`.
+		- Confidence reward as an optional bounded auxiliary term.
+		- Composite reward that renormalizes over valid components.
+	- `src/rl/rollouts.py`
+		- Builds rollout records.
+		- Computes per-complex group-relative advantages with `zscore`, `center`, or `rank`.
+		- Provides clipped surrogate-ratio helper for later PPO.
+	- `src/rl/train.py`
+		- Implements `offline_reward_debug`.
+		- Produces `rollout.jsonl`, `rewards.csv`, `reward_summary.json`, `group_summary.json`, and `logs/train_metrics.jsonl`.
+	- `src/pipeline/run_posttraining.py`
+		- Creates the posttraining run skeleton.
+		- Dispatches to the offline reward-debug workflow.
+	- `configs/rl/offline_reward_debug.yaml`
+		- Default config for reward/rollout debugging from an existing baseline run.
+
+2. Current runnable command
+	- Use this after any top-10 baseline run finishes:
+		```bash
+		uv run python -m src.pipeline.run_posttraining \
+		  --config configs/rl/offline_reward_debug.yaml \
+		  --source-run-dir artifacts/runs/<baseline_run_id> \
+		  --run-tag <baseline_run_id>
+		```
+	- This creates:
+		```text
+		artifacts/runs/{date}_diffdock_posttraining_offline_reward_debug_{tag}_seed42/
+		  config.yaml
+		  config_snapshot.json
+		  input_train_manifest.json
+		  rollouts/offline/generated_samples_manifest.json
+		  rollouts/offline/rollout.jsonl
+		  rollouts/offline/rewards.csv
+		  rollouts/offline/reward_summary.json
+		  rollouts/offline/group_summary.json
+		  logs/train_metrics.jsonl
+		  summary.md
+		  posttraining_summary.json
+		```
+
+3. What this validates
+	- Generated poses can be converted into RL examples.
+	- RMSD reward matches the evaluation path closely enough for training diagnostics.
+	- Confidence can be included as an auxiliary component, but should not be the primary reward.
+	- Rewards are normalized within each complex group, not globally.
+	- Bad or missing samples become invalid reward rows instead of crashing the workflow.
+
+4. What remains before real training
+	- Implement `src/rl/agent.py` with real DiffDock model loading.
+	- Add a supervised fine-tuning smoke run before reward-driven training.
+	- Add in-process rollout generation from a frozen old-policy snapshot.
+	- Implement surrogate scoring with DiffDock loss components using per-sample losses.
+	- Add REINFORCE-surrogate first, then surrogate PPO.
+	- Exact PPO remains later work because DiffDock transition log-probs are not instrumented yet.
 ##### **6. Comparison + Reporting**
 - Compare baseline vs post-trained model
 ###### **Key Components / Deliverables**

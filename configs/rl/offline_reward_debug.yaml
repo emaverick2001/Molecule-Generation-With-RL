@@ -1,0 +1,41 @@
+# Offline RL reward-debug run.
+#
+# This validates the post-training data path against an existing baseline run:
+# generated samples -> rewards -> per-complex advantages -> rollout manifest.
+# It does not update DiffDock weights.
+
+experiment:
+  name: diffdock_rl
+  model: diffdock
+  mode: posttraining_offline_reward_debug
+  seed: 42
+
+algorithm:
+  name: offline_reward_debug
+  policy_mode: surrogate
+
+data:
+  # Override this from the CLI:
+  #   --source-run-dir artifacts/runs/<baseline_run_id>
+  source_run_dir: null
+
+reward:
+  type: composite
+  weights:
+    rmsd: 1.0
+    confidence: 0.0
+  sigma_angstrom: 2.0
+  max_rmsd: 10.0
+  invalid_reward: -1.0
+  confidence_mode: logit
+  confidence_temperature: 1.0
+
+rollout:
+  samples_per_complex: 10
+  advantage_normalization: zscore
+  min_valid_samples_per_complex: 2
+  invalid_group_action: zero
+
+artifacts:
+  run_root: artifacts/runs
+  run_tag: null
