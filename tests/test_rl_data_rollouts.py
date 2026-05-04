@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from src.rl.data import (
     export_complexes_to_diffdock_csv,
     group_examples_by_complex,
     join_samples_with_complex_manifest,
+    load_offline_rl_examples,
 )
 from src.rl.rollouts import (
     build_rollout_records,
@@ -62,6 +64,66 @@ def test_export_complexes_to_diffdock_csv_columns(tmp_path):
     text = Path(path).read_text(encoding="utf-8")
     assert "complex_name,protein_path,ligand_description" in text
     assert "1abc,1abc/protein.pdb,1abc/ligand.sdf" in text
+
+
+def test_load_offline_rl_examples_relocates_packaged_run_paths(tmp_path):
+    package_root = tmp_path / "imported"
+    run_id = "2026-05-04_diffdock_rl_smoke_top4_baseline_seed42"
+    run_dir = package_root / "artifacts" / "runs" / run_id
+    data_dir = package_root / "data" / "raw" / "pdbbind_real" / "1abc"
+    generated_dir = run_dir / "generated_samples"
+    data_dir.mkdir(parents=True)
+    generated_dir.mkdir(parents=True)
+
+    for filename in ["protein.pdb", "ligand.sdf", "ligand_gt.sdf"]:
+        (data_dir / filename).write_text("placeholder\n", encoding="utf-8")
+    (generated_dir / "1abc_sample_0.sdf").write_text("placeholder\n", encoding="utf-8")
+
+    input_manifest = run_dir / "input_manifest.json"
+    generated_manifest = run_dir / "generated_samples_manifest.json"
+    input_manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "complex_id": "1abc",
+                    "protein_path": "data/raw/pdbbind_real/1abc/protein.pdb",
+                    "ligand_path": "data/raw/pdbbind_real/1abc/ligand.sdf",
+                    "ground_truth_pose_path": (
+                        "data/raw/pdbbind_real/1abc/ligand_gt.sdf"
+                    ),
+                    "split": "smoke",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    generated_manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "complex_id": "1abc",
+                    "sample_id": 0,
+                    "pose_path": (
+                        f"artifacts/runs/{run_id}/generated_samples/"
+                        "1abc_sample_0.sdf"
+                    ),
+                    "confidence_score": 0.2,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    examples = load_offline_rl_examples(
+        input_manifest,
+        generated_manifest,
+        source_run_dir=run_dir,
+    )
+
+    assert Path(examples[0].protein_path).is_file()
+    assert Path(examples[0].predicted_pose_path).is_file()
+    assert examples[0].ground_truth_pose_path is not None
+    assert Path(examples[0].ground_truth_pose_path).is_file()
 
 
 def test_group_advantages_zero_mean_per_group(tmp_path):

@@ -698,8 +698,8 @@ example_input = {
 		- `RolloutRecord`: grouped sample, reward, advantage, and future old-policy score fields.
 	- `src/rl/config.py`
 		- Loads and validates RL configs.
-		- Supports `offline_reward_debug` now.
-		- Explicitly blocks exact PPO until DiffDock sampler log-probs are available.
+		- Supports `offline_reward_debug` and `grpo_surrogate`.
+		- Explicitly keeps exact PPO out of scope until DiffDock sampler log-probs are available.
 	- `src/rl/data.py`
 		- Loads generated sample manifests.
 		- Joins generated poses to canonical complex manifests.
@@ -712,10 +712,19 @@ example_input = {
 	- `src/rl/rollouts.py`
 		- Builds rollout records.
 		- Computes per-complex group-relative advantages with `zscore`, `center`, or `rank`.
-		- Provides clipped surrogate-ratio helper for later PPO.
+		- Keeps group size at 4 for the current GRPO smoke/training path.
+	- `src/rl/grpo.py`
+		- Implements the first GRPO objective shape over offline rollouts:
+		  `loss = -mean(advantage * surrogate_score)`.
+		- Provides a trainable debug-linear surrogate scorer and checkpoint writer.
 	- `src/rl/train.py`
 		- Implements `offline_reward_debug`.
+		- Implements `grpo_surrogate` for a one-step smoke update over grouped rollouts.
 		- Produces `rollout.jsonl`, `rewards.csv`, `reward_summary.json`, `group_summary.json`, and `logs/train_metrics.jsonl`.
+	- `src/rl/agent.py`
+		- Adds the `DiffDockRLAgent` wrapper boundary.
+		- Supports debug-linear surrogate scoring, checkpoint save/load, freeze/unfreeze, and CLI-backed grouped generation.
+		- Raises a clear `NotImplementedError` for the real DiffDock-loss surrogate hook.
 	- `src/pipeline/run_posttraining.py`
 		- Creates the posttraining run skeleton.
 		- Dispatches to the offline reward-debug workflow.
@@ -753,8 +762,17 @@ example_input = {
 		  --include-inputs
 		```
 	- This generates 4 DiffDock poses for one complex, evaluates them, runs the
-	  offline RL reward/advantage workflow, and packages both the rollout and
-	  posttraining smoke artifacts. It does not update DiffDock weights yet.
+	  offline RL reward/advantage workflow, runs one GRPO surrogate update, and
+	  packages the rollout, reward-debug, and GRPO smoke artifacts. It does not
+	  update DiffDock score-model weights yet.
+
+	- GRPO-only command after a 4-sample smoke/baseline run:
+		```bash
+		uv run python -m src.pipeline.run_posttraining \
+		  --config configs/rl/grpo_surrogate_smoke.yaml \
+		  --source-run-dir artifacts/runs/<one_complex_top4_run_id> \
+		  --run-tag <tag>_grpo
+		```
 
 3. What this validates
 	- Generated poses can be converted into RL examples.
@@ -762,14 +780,17 @@ example_input = {
 	- Confidence can be included as an auxiliary component, but should not be the primary reward.
 	- Rewards are normalized within each complex group, not globally.
 	- Bad or missing samples become invalid reward rows instead of crashing the workflow.
+	- The GRPO loss sign is validated: positive-advantage samples receive higher
+	  surrogate scores after the debug update.
+	- A checkpoint is written under `checkpoints/grpo_debug_linear_step1.json`.
 
 4. What remains before real training
-	- Implement `src/rl/agent.py` with real DiffDock model loading.
+	- Wire `src/rl/agent.py` into real in-process DiffDock model loading.
 	- Add a supervised fine-tuning smoke run before reward-driven training.
 	- Add in-process rollout generation from a frozen old-policy snapshot.
 	- Implement surrogate scoring with DiffDock loss components using per-sample losses.
-	- Add REINFORCE-surrogate first, then surrogate PPO.
-	- Exact PPO remains later work because DiffDock transition log-probs are not instrumented yet.
+	- Replace the debug-linear GRPO surrogate with `s_theta = -DiffDock_loss_theta`.
+	- Exact PPO remains out of scope because DiffDock transition log-probs are not instrumented.
 ##### **6. Comparison + Reporting**
 - Compare baseline vs post-trained model
 ###### **Key Components / Deliverables**

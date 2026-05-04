@@ -12,6 +12,90 @@ from src.rl.utils import read_jsonl, write_jsonl
 from src.utils.schemas import ComplexInput, GeneratedPose
 
 
+def _candidate_artifact_roots(source_run_dir: Path | None) -> list[Path]:
+    if source_run_dir is None:
+        return []
+
+    candidates = [source_run_dir]
+    candidates.extend(source_run_dir.parents)
+
+    unique_candidates = []
+    seen = set()
+    for candidate in candidates:
+        resolved_key = str(candidate)
+        if resolved_key not in seen:
+            unique_candidates.append(candidate)
+            seen.add(resolved_key)
+
+    return unique_candidates
+
+
+def _relocate_path_if_needed(
+    path: str,
+    *,
+    source_run_dir: Path | None = None,
+) -> str:
+    path_obj = Path(path)
+    if path_obj.is_absolute() or path_obj.is_file() or source_run_dir is None:
+        return path
+
+    for root in _candidate_artifact_roots(source_run_dir):
+        candidate = root / path_obj
+        if candidate.is_file():
+            return str(candidate)
+
+    run_prefix = Path("artifacts") / "runs" / source_run_dir.name
+    try:
+        suffix = path_obj.relative_to(run_prefix)
+    except ValueError:
+        return path
+
+    candidate = source_run_dir / suffix
+    if candidate.is_file():
+        return str(candidate)
+
+    return path
+
+
+def _relocate_complex_paths(
+    record: ComplexInput,
+    *,
+    source_run_dir: Path | None = None,
+) -> ComplexInput:
+    return ComplexInput(
+        complex_id=record.complex_id,
+        protein_path=_relocate_path_if_needed(
+            record.protein_path,
+            source_run_dir=source_run_dir,
+        ),
+        ligand_path=_relocate_path_if_needed(
+            record.ligand_path,
+            source_run_dir=source_run_dir,
+        ),
+        ground_truth_pose_path=_relocate_path_if_needed(
+            record.ground_truth_pose_path,
+            source_run_dir=source_run_dir,
+        ),
+        split=record.split,
+    )
+
+
+def _relocate_generated_pose_path(
+    sample: GeneratedPose,
+    *,
+    source_run_dir: Path | None = None,
+) -> GeneratedPose:
+    return GeneratedPose(
+        complex_id=sample.complex_id,
+        sample_id=sample.sample_id,
+        pose_path=_relocate_path_if_needed(
+            sample.pose_path,
+            source_run_dir=source_run_dir,
+        ),
+        confidence_score=sample.confidence_score,
+    )
+
+
 def load_generated_samples_manifest(path: str | Path) -> list[GeneratedPose]:
     path = Path(path)
     if not path.is_file():
@@ -130,9 +214,17 @@ def load_offline_rl_examples(
     generated_manifest: str | Path,
     *,
     source_run_id: str | None = None,
+    source_run_dir: str | Path | None = None,
 ) -> list[RLExample]:
-    complexes = load_complex_manifest(input_manifest, validate=False)
-    samples = load_generated_samples_manifest(generated_manifest)
+    source_run_path = Path(source_run_dir) if source_run_dir else None
+    complexes = [
+        _relocate_complex_paths(record, source_run_dir=source_run_path)
+        for record in load_complex_manifest(input_manifest, validate=False)
+    ]
+    samples = [
+        _relocate_generated_pose_path(sample, source_run_dir=source_run_path)
+        for sample in load_generated_samples_manifest(generated_manifest)
+    ]
     return join_samples_with_complex_manifest(
         samples,
         complexes,

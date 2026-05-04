@@ -11,7 +11,7 @@ SUPPORTED_ALGORITHMS = {
     "offline_reward_debug",
     "sft",
     "reinforce_surrogate",
-    "surrogate_ppo",
+    "grpo_surrogate",
 }
 
 
@@ -27,8 +27,10 @@ class ExperimentConfig:
 class AlgorithmConfig:
     name: str
     policy_mode: str = "surrogate"
-    ppo_epochs: int = 1
+    grpo_epochs: int = 1
     minibatch_size: int = 8
+    learning_rate: float = 0.05
+    surrogate_backend: str = "debug_linear"
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ class RewardConfig:
 
 @dataclass(frozen=True)
 class RolloutConfig:
-    samples_per_complex: int = 10
+    samples_per_complex: int = 4
     advantage_normalization: str = "zscore"
     min_valid_samples_per_complex: int = 1
     invalid_group_action: str = "zero"
@@ -108,8 +110,10 @@ def parse_rl_config(data: dict[str, Any]) -> RLConfig:
         algorithm=AlgorithmConfig(
             name=algorithm.get("name", "offline_reward_debug"),
             policy_mode=algorithm.get("policy_mode", "surrogate"),
-            ppo_epochs=int(algorithm.get("ppo_epochs", 1)),
+            grpo_epochs=int(algorithm.get("grpo_epochs", 1)),
             minibatch_size=int(algorithm.get("minibatch_size", 8)),
+            learning_rate=float(algorithm.get("learning_rate", 0.05)),
+            surrogate_backend=algorithm.get("surrogate_backend", "debug_linear"),
         ),
         data=DataConfig(
             source_run_dir=data_cfg.get("source_run_dir"),
@@ -131,7 +135,7 @@ def parse_rl_config(data: dict[str, Any]) -> RLConfig:
             confidence_temperature=float(reward.get("confidence_temperature", 1.0)),
         ),
         rollout=RolloutConfig(
-            samples_per_complex=int(rollout.get("samples_per_complex", 10)),
+            samples_per_complex=int(rollout.get("samples_per_complex", 4)),
             advantage_normalization=rollout.get("advantage_normalization", "zscore"),
             min_valid_samples_per_complex=int(
                 rollout.get("min_valid_samples_per_complex", 1)
@@ -198,16 +202,32 @@ def validate_rl_config(cfg: RLConfig) -> None:
     if cfg.algorithm.name not in SUPPORTED_ALGORITHMS:
         raise ValueError(f"Unsupported RL algorithm: {cfg.algorithm.name}")
 
-    if cfg.algorithm.name != "offline_reward_debug":
+    if cfg.algorithm.name not in {"offline_reward_debug", "grpo_surrogate"}:
         raise NotImplementedError(
             f"{cfg.algorithm.name} is scaffolded but not implemented yet. "
-            "Run offline_reward_debug first to validate rewards and rollouts."
+            "Run grpo_surrogate after offline_reward_debug validates rewards."
         )
 
     if cfg.algorithm.policy_mode == "exact":
         raise NotImplementedError(
-            "Exact PPO/log-prob training is not available until DiffDock sampler "
+            "Exact PPO/log-prob training is out of scope until DiffDock sampler "
             "transition statistics are instrumented."
+        )
+    if cfg.algorithm.policy_mode != "surrogate":
+        raise ValueError("Only surrogate policy_mode is supported for GRPO")
+    if cfg.algorithm.grpo_epochs <= 0:
+        raise ValueError("algorithm.grpo_epochs must be positive")
+    if cfg.algorithm.learning_rate <= 0:
+        raise ValueError("algorithm.learning_rate must be positive")
+    if cfg.algorithm.surrogate_backend not in {"debug_linear", "diffdock_loss"}:
+        raise ValueError("Unsupported algorithm.surrogate_backend")
+    if (
+        cfg.algorithm.name == "grpo_surrogate"
+        and cfg.algorithm.surrogate_backend == "diffdock_loss"
+    ):
+        raise NotImplementedError(
+            "DiffDock-loss surrogate scoring is not wired yet. Use "
+            "surrogate_backend=debug_linear for the GRPO smoke path."
         )
 
     if cfg.rollout.samples_per_complex <= 0:
@@ -241,7 +261,7 @@ def validate_rl_config(cfg: RLConfig) -> None:
         "generated_samples_manifest.json",
     )
 
-    if cfg.algorithm.name == "offline_reward_debug":
+    if cfg.algorithm.name in {"offline_reward_debug", "grpo_surrogate"}:
         if not input_manifest:
             raise ValueError("data.input_manifest or data.source_run_dir is required")
         if not generated_manifest:

@@ -10,11 +10,13 @@ Options:
   --smoke-complex-id ID     Real PDBBind-style complex ID. Defaults to SMOKE_COMPLEX_ID.
   --raw-root PATH           Root containing real complexes. Default: data/raw/pdbbind_real
   --baseline-config PATH    DiffDock rollout config. Default: configs/diffdock/smoke_top4.yaml
-  --rl-config PATH          RL smoke config. Default: configs/rl/offline_reward_smoke.yaml
+  --rl-config PATH          Reward-debug config. Default: configs/rl/offline_reward_smoke.yaml
+  --grpo-config PATH        GRPO config. Default: configs/rl/grpo_surrogate_smoke.yaml
   --seed N                  Random seed. Default: 42
   --run-tag TAG             Run tag. Default: rl_smoke_<ID>_<HHMMSS>
   --package-output-dir DIR  Output dir for packaged archives. Default: packaged_runs
   --include-inputs          Include protein/ligand/reference structures in packages
+  --skip-grpo               Skip the one-step GRPO surrogate smoke run
   --skip-package            Run smoke without packaging artifacts
   -h, --help                Show this help message
 
@@ -23,10 +25,11 @@ This script runs a one-complex RL smoke workflow:
   2. Generate 4 DiffDock poses
   3. Run evaluation and structure diagnostics
   4. Run offline RL reward/advantage posttraining smoke
-  5. Package baseline and posttraining artifacts
+  5. Run one-step GRPO surrogate smoke
+  6. Package baseline and posttraining artifacts
 
-The RL smoke validates reward and rollout plumbing. It does not update DiffDock
-weights yet.
+The GRPO smoke validates objective signs and checkpoint artifacts with a
+debug-linear surrogate. It does not update DiffDock score-model weights yet.
 EOF
 }
 
@@ -34,10 +37,12 @@ SMOKE_COMPLEX_ID="${SMOKE_COMPLEX_ID:-}"
 RAW_ROOT="${PDBBIND_RAW_ROOT:-data/raw/pdbbind_real}"
 BASELINE_CONFIG="configs/diffdock/smoke_top4.yaml"
 RL_CONFIG="configs/rl/offline_reward_smoke.yaml"
+GRPO_CONFIG="configs/rl/grpo_surrogate_smoke.yaml"
 SEED="42"
 RUN_TAG=""
 PACKAGE_OUTPUT_DIR="packaged_runs"
 INCLUDE_INPUTS="false"
+SKIP_GRPO="false"
 SKIP_PACKAGE="false"
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       RL_CONFIG="$2"
       shift 2
       ;;
+    --grpo-config)
+      GRPO_CONFIG="$2"
+      shift 2
+      ;;
     --seed)
       SEED="$2"
       shift 2
@@ -72,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-inputs)
       INCLUDE_INPUTS="true"
+      shift
+      ;;
+    --skip-grpo)
+      SKIP_GRPO="true"
       shift
       ;;
     --skip-package)
@@ -196,20 +209,49 @@ fi
 
 echo "==> RL smoke directory: $RL_RUN_DIR"
 
+GRPO_RUN_DIR=""
+if [[ "$SKIP_GRPO" == "false" ]]; then
+  find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_BEFORE"
+
+  echo "==> Running GRPO surrogate smoke"
+  uv run python -m src.pipeline.run_posttraining \
+    --config "$GRPO_CONFIG" \
+    --source-run-dir "$BASELINE_RUN_DIR" \
+    --run-tag "${RUN_TAG}_grpo" \
+    --seed "$SEED"
+
+  find artifacts/runs -mindepth 1 -maxdepth 1 -type d -print | sort > "$RUNS_AFTER"
+  GRPO_RUN_DIR="$(comm -13 "$RUNS_BEFORE" "$RUNS_AFTER" | sort -r | head -1)"
+
+  if [[ -z "$GRPO_RUN_DIR" || ! -d "$GRPO_RUN_DIR" ]]; then
+    echo "Could not detect GRPO smoke run directory." >&2
+    exit 1
+  fi
+
+  echo "==> GRPO smoke directory: $GRPO_RUN_DIR"
+fi
+
 if [[ "$SKIP_PACKAGE" == "false" ]]; then
   echo "==> Packaging baseline rollout artifacts"
   BASELINE_PACKAGE_ARGS=("$BASELINE_RUN_DIR" --key --output-dir "$PACKAGE_OUTPUT_DIR")
   RL_PACKAGE_ARGS=("$RL_RUN_DIR" --key --output-dir "$PACKAGE_OUTPUT_DIR")
+  GRPO_PACKAGE_ARGS=("$GRPO_RUN_DIR" --key --output-dir "$PACKAGE_OUTPUT_DIR")
 
   if [[ "$INCLUDE_INPUTS" == "true" ]]; then
     BASELINE_PACKAGE_ARGS+=(--include-inputs)
     RL_PACKAGE_ARGS+=(--include-inputs)
+    GRPO_PACKAGE_ARGS+=(--include-inputs)
   fi
 
   ./scripts/package_run_artifacts.sh "${BASELINE_PACKAGE_ARGS[@]}"
 
   echo "==> Packaging RL posttraining smoke artifacts"
   ./scripts/package_run_artifacts.sh "${RL_PACKAGE_ARGS[@]}"
+
+  if [[ -n "$GRPO_RUN_DIR" ]]; then
+    echo "==> Packaging GRPO smoke artifacts"
+    ./scripts/package_run_artifacts.sh "${GRPO_PACKAGE_ARGS[@]}"
+  fi
 fi
 
 echo "==> RL posttraining smoke complete"
@@ -217,3 +259,7 @@ echo "Baseline rollout directory:"
 echo "  $BASELINE_RUN_DIR"
 echo "RL smoke directory:"
 echo "  $RL_RUN_DIR"
+if [[ -n "$GRPO_RUN_DIR" ]]; then
+  echo "GRPO smoke directory:"
+  echo "  $GRPO_RUN_DIR"
+fi

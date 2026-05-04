@@ -31,7 +31,7 @@ reward:
   confidence_temperature: 1.0
 
 rollout:
-  samples_per_complex: 10
+  samples_per_complex: 4
   advantage_normalization: zscore
   min_valid_samples_per_complex: 2
   invalid_group_action: zero

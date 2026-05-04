@@ -1,0 +1,50 @@
+# One-complex GRPO surrogate smoke config.
+#
+# This consumes an existing 4-sample DiffDock rollout run, computes RMSD rewards
+# and group-relative advantages, then performs one GRPO-style update on a small
+# debug-linear surrogate scorer:
+#
+#   loss = -mean(advantage * surrogate_score)
+#
+# It proves the GRPO objective shape, signs, metrics, and checkpoint artifacts.
+# It does not yet update DiffDock score-model weights.
+
+experiment:
+  name: diffdock_grpo_smoke
+  model: diffdock
+  mode: posttraining_grpo_surrogate_smoke
+  seed: 42
+
+algorithm:
+  name: grpo_surrogate
+  policy_mode: surrogate
+  surrogate_backend: debug_linear
+  grpo_epochs: 1
+  minibatch_size: 4
+  learning_rate: 0.05
+
+data:
+  # Override from the CLI:
+  #   --source-run-dir artifacts/runs/<one_complex_top4_run_id>
+  source_run_dir: null
+
+reward:
+  type: composite
+  weights:
+    rmsd: 1.0
+    confidence: 0.0
+  sigma_angstrom: 2.0
+  max_rmsd: 10.0
+  invalid_reward: -1.0
+  confidence_mode: logit
+  confidence_temperature: 1.0
+
+rollout:
+  samples_per_complex: 4
+  advantage_normalization: zscore
+  min_valid_samples_per_complex: 2
+  invalid_group_action: zero
+
+artifacts:
+  run_root: artifacts/runs
+  run_tag: null

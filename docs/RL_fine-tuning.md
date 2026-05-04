@@ -2,11 +2,11 @@
 
 ## Executive summary
 
-The highest-confidence way to migrate PepFlow Option2-style fine-tuning to DiffDock is to treat **DiffDock’s score model as the policy**, **grouped pose samples per complex as rollouts**, and **terminal pose quality as reward**, but to begin with a **surrogate objective** rather than exact PPO. PepFlow’s public paper and repo expose a multimodal flow-matching model with explicit per-modality losses and modality-controlled sampling, while DiffDock’s public paper and repo expose a diffusion docking model over ligand **translation, rotation, and torsion**, plus a separate confidence model and a training path centered on decomposed score-matching losses and inference-time sampling. That makes a direct “exact PPO over action log-probs” port unrealistic as the first implementation, and makes a **surrogate GRPO/PPO-style objective built on DiffDock loss components** the right starting point. citeturn20view4turn33view3turn6view1turn24view0turn29view3turn29view4
+The highest-confidence way to migrate PepFlow Option2-style fine-tuning to DiffDock is to treat **DiffDock’s score model as the policy**, **grouped pose samples per complex as rollouts**, and **terminal pose quality as reward**, but to begin with **GRPO-style group-relative optimization** rather than exact PPO. PepFlow’s public paper and repo expose a multimodal flow-matching model with explicit per-modality losses and modality-controlled sampling, while DiffDock’s public paper and repo expose a diffusion docking model over ligand **translation, rotation, and torsion**, plus a separate confidence model and a training path centered on decomposed score-matching losses and inference-time sampling. That makes a direct “exact PPO over action log-probs” port unrealistic for this project, and makes **surrogate GRPO built on grouped DiffDock poses and per-complex normalized rewards** the right starting point. citeturn20view4turn33view3turn6view1turn24view0turn29view3turn29view4
 
-DiffDock already provides most of the mechanical pieces needed for this: batched inference over many complexes through a CSV adapter, multiple samples per complex, separate score and confidence checkpoints, ranking by confidence, and per-complex SDF outputs. Its training code already exposes translation, rotation, torsion, and optional backbone/sidechain loss terms, supports non-mean loss computation, logs validation inference metrics, and saves best checkpoints. The practical migration is therefore: implement a typed RL data layer, compute rewards on generated poses, define a DiffDock sample score \(s_\theta = -\ell_{\text{DD}}\), add a ground-truth supervised anchor, add a frozen-reference regularizer, and only later consider exact PPO after sampler instrumentation exists. citeturn28view3turn27view0turn17view1turn17view2turn24view1turn24view2turn24view4
+DiffDock already provides most of the mechanical pieces needed for this: batched inference over many complexes through a CSV adapter, multiple samples per complex, separate score and confidence checkpoints, ranking by confidence, and per-complex SDF outputs. Its training code already exposes translation, rotation, torsion, and optional backbone/sidechain loss terms, supports non-mean loss computation, logs validation inference metrics, and saves best checkpoints. The practical migration is therefore: implement a typed RL data layer, compute rewards on generated poses, define a DiffDock sample score \(s_\theta = -\ell_{\text{DD}}\), add a ground-truth supervised anchor, add a frozen-reference regularizer, and keep exact PPO out of scope unless sampler instrumentation becomes available. citeturn28view3turn27view0turn17view1turn17view2turn24view1turn24view2turn24view4
 
-Another key conclusion is architectural rather than mathematical: **a single stale `generated_samples_manifest.json` is not enough for real PPO/GRPO training**. PPO-style methods assume repeated optimization over data sampled from an “old” policy. So the baseline generation artifacts are useful for reward debugging and offline warm-start experiments, but actual post-training should produce **step-local rollout manifests** inside the RL run directory. citeturn29view2turn29view3
+Another key conclusion is architectural rather than mathematical: **a single stale `generated_samples_manifest.json` is not enough for real GRPO training**. Baseline generation artifacts are useful for reward debugging and offline warm-start experiments, but actual post-training should produce **step-local rollout manifests** inside the RL run directory. citeturn29view2turn29view3
 
 Finally, confidence must be handled carefully. DiffDock’s README states that the confidence output is **not a binding affinity prediction**, and also warns that confidence values are hard to compare across different complexes. That makes confidence useful as a pose-quality proxy or auxiliary reward, but not as a standalone global reward scale across targets. RMSD, when available, should remain the primary training-time reward for supervised validation and most initial RL experiments. citeturn5view4
 
@@ -24,7 +24,7 @@ PepFlow’s paper describes a multimodal generator over backbone frames in SE(3)
 | Grouped rollouts \(G\) from \(\theta_{\text{old}}\) | `samples_per_complex = G` for each complex | Step-local on-policy rollouts under `artifacts/runs/{rl_run_id}/rollouts/step_x/` |
 | Sample score \(s_\theta(y,c) = -\ell_{\text{PF}}\) | Surrogate DiffDock sample score \(s_\theta(\hat y,c) = -\ell_{\text{DD}}\) | A per-sample scorer built from DiffDock loss components |
 | Group-relative advantage | Same | Per-complex z-scored rewards |
-| Clipped PPO/GRPO-style ratio | Same, but use surrogate score ratio first | `surrogate_ppo` objective before exact PPO |
+| GRPO group-relative objective | Same | `grpo_surrogate` objective before any exact log-prob work |
 | Supervised anchor on ground truth | Same | Standard DiffDock supervised loss on ground-truth batches |
 | Reference regularizer | Frozen score-model reference | Prediction matching or adapter-L2 regularization |
 | Partial modality control | No exact analogue | Reduce rollout cost and train fewer parameters rather than slicing modalities |
@@ -56,27 +56,11 @@ A_i = \frac{r_i - \mu_{g(i)}}{\sigma_{g(i)} + \varepsilon}
 \]
 
 \[
-\rho_i =
-\exp\!\Big(
-\mathrm{clip}\big(
-s_\theta(\hat y_i,c_i) - s_{\theta_{\text{old}}}(\hat y_i,c_i),
--\delta,\delta
-\big)
-\Big)
-\]
-
-\[
-L_{\text{surrogate-ppo}}
+L_{\text{surrogate-GRPO}}
 =
--\frac{1}{N}\sum_i
-\min\!\Big(
-\rho_i A_i,\;
-\mathrm{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i
-\Big)
-+
-\lambda_{\text{sup}}L_{\text{sup}}
-+
-\beta_{\text{ref}}L_{\text{ref}}
+-\frac{1}{N}\sum_i A_i\,s_\theta(\hat y_i,c_i)
++ \lambda_{\text{sup}}L_{\text{sup}}
++ \beta_{\text{ref}}L_{\text{ref}}
 \]
 
 The critical engineering requirement is that `\ell_DD` be available **per sample**, not only as a batch mean. The public DiffDock loss path already includes an `apply_mean=False` branch, which is the most promising hook for creating a PepFlow-like surrogate score without rewriting the training loss from scratch. citeturn16view0turn17view0turn17view1turn17view2
@@ -104,8 +88,8 @@ configs/
   rl/
     base_diffdock.yaml
     sft_diffdock.yaml
-    reinforce_surrogate_diffdock.yaml
-    ppo_surrogate_diffdock.yaml
+    grpo_surrogate_smoke.yaml
+    grpo_surrogate_diffdock.yaml
 
 tests/
   test_rl_config.py
@@ -439,17 +423,15 @@ def minibatch_rollouts(
 
 ### `src/rl/train.py`
 
-**Purpose.** Implement SFT, REINFORCE, and surrogate PPO loops.
+**Purpose.** Implement SFT and GRPO-style surrogate loops.
 
 **Key functions**
 ```python
 def run_supervised_finetune(cfg: RLConfig) -> TrainSummary: ...
-def run_reinforce(cfg: RLConfig) -> TrainSummary: ...
-def run_surrogate_ppo(cfg: RLConfig) -> TrainSummary: ...
+def run_grpo_surrogate(cfg: RLConfig) -> TrainSummary: ...
 
 def train_step_supervised(...): ...
-def train_step_reinforce(...): ...
-def train_step_surrogate_ppo(...): ...
+def train_step_grpo_surrogate(...): ...
 
 def maybe_run_eval_hook(
     eval_hook: Callable[[Path], dict[str, float]] | None,
@@ -462,8 +444,8 @@ def main(config_path: str | Path) -> int: ...
 
 **Behavior**
 - `run_supervised_finetune` is the sanity stage. It proves model loading, optimizer steps, checkpointing, and eval-hook wiring before any RL logic is layered in.
-- `run_reinforce` should be the first reward-driven stage. Use exact log-probs only if available; otherwise use surrogate scores with on-policy grouped rewards.
-- `run_surrogate_ppo` should cache old scores once per rollout batch and then perform several clipped-ratio minibatch updates, matching PPO’s core reuse pattern. PPO’s clipped-ratio logic and GRPO’s group-relativized advantages are the right references here. citeturn29view4turn29view0turn29view3
+- `run_grpo_surrogate` is the first reward-driven stage. It uses grouped rollouts, per-complex normalized rewards, and the objective `loss = -mean(advantage * surrogate_score)`.
+- The current smoke backend uses a debug-linear surrogate scorer. The production backend should replace that score with `s_theta = -DiffDock_loss_theta`.
 - `maybe_run_eval_hook` must call out to external evaluation code. The RL package should not own full benchmark evaluation.
 
 **Error handling**
@@ -473,8 +455,8 @@ def main(config_path: str | Path) -> int: ...
 
 **Tests**
 - `test_supervised_step_updates_parameters`
-- `test_reinforce_step_runs_with_mock_rollouts`
-- `test_surrogate_ppo_applies_ratio_clipping`
+- `test_grpo_surrogate_step_runs_with_mock_rollouts`
+- `test_grpo_surrogate_checkpoint_roundtrip`
 - `test_resume_restores_optimizer_and_step`
 - `test_train_skips_all_invalid_rollout_step`
 - `test_eval_hook_called_on_schedule`
@@ -637,12 +619,10 @@ for step in range(cfg.train.max_steps):
 
 This stage exists to prove that model load/save, optimizer, checkpointing, and val-hook execution all work with the DiffDock backend before reward-driven rollouts are introduced. DiffDock’s public trainer already logs train/val losses and validation inference metrics and saves best checkpoints by both val loss and inference metric, which is the right behavior to mirror. citeturn24view1turn24view2turn24view4
 
-### REINFORCE pseudocode
+### GRPO surrogate pseudocode
 
 ```python
 agent = DiffDockRLAgent(...)
-reference = agent.frozen_reference_policy()
-
 for update_idx in range(cfg.train.max_updates):
     old_agent = agent.frozen_old_policy()
     complexes = sample_complexes(train_manifest, cfg.rollout.batch_complexes)
@@ -656,13 +636,9 @@ for update_idx in range(cfg.train.max_updates):
     )
     rollouts = compute_group_advantages(rollouts)
 
-    if cfg.algorithm.policy_mode == "exact":
-        logp = agent.compute_exact_logprobs(rollouts.trajectories)
-        loss_rl = -(advantages * logp).mean()
-    else:
-        s_new = agent.compute_surrogate_scores([r.example for r in rollouts])
-        adv = torch.tensor([r.advantage for r in rollouts], device=s_new.device)
-        loss_rl = -(adv * s_new).mean()
+    s_new = agent.compute_surrogate_scores([r.example for r in rollouts])
+    adv = torch.tensor([r.advantage for r in rollouts], device=s_new.device)
+    loss_rl = -(adv * s_new).mean()
 
     gt_batch = next(anchor_loader)
     loss_sup = cfg.loss.lambda_supervised * agent.compute_supervised_loss(gt_batch)["loss"]
@@ -673,54 +649,13 @@ for update_idx in range(cfg.train.max_updates):
     checkpoint_and_log(...)
 ```
 
-This is the first real reward-driven mode. If exact transition log-probs are unavailable, use surrogate scores but keep the training **on-policy** and grouped by complex. REINFORCE remains the conceptual base case for terminal reward optimization. citeturn4view3
-
-### Surrogate PPO pseudocode
-
-```python
-for update_idx in range(cfg.train.max_updates):
-    old_agent = agent.frozen_old_policy()
-    rollouts = collect_on_policy_rollouts(old_agent, ...)
-
-    old_scores = torch.tensor([r.old_surrogate_score for r in rollouts], device=device)
-    advantages = torch.tensor([r.advantage for r in rollouts], device=device)
-
-    for ppo_epoch in range(cfg.algorithm.ppo_epochs):
-        for minibatch in minibatch_rollouts(rollouts, cfg.algorithm.minibatch_size):
-            if cfg.algorithm.policy_mode == "exact":
-                ratio = torch.exp(logp_new - logp_old)
-            else:
-                new_scores = agent.compute_surrogate_scores([r.example for r in minibatch])
-                ratio = torch.exp(
-                    torch.clamp(
-                        new_scores - old_scores_mb,
-                        -cfg.loss.max_score_delta,
-                        cfg.loss.max_score_delta,
-                    )
-                )
-
-            loss_rl = -torch.mean(
-                torch.minimum(
-                    ratio * advantages_mb,
-                    torch.clamp(ratio, 1 - cfg.loss.clip_eps, 1 + cfg.loss.clip_eps) * advantages_mb,
-                )
-            )
-
-            gt_batch = next(anchor_loader)
-            loss_sup = cfg.loss.lambda_supervised * agent.compute_supervised_loss(gt_batch)["loss"]
-            loss_ref = cfg.loss.beta_ref * agent.compute_reference_match_loss(gt_batch)
-            total_loss = loss_rl + loss_sup + loss_ref
-            backward_and_step(total_loss, optimizer, cfg.train)
-```
+This is the first real reward-driven mode. It keeps the training **grouped by complex** and avoids exact diffusion transition log-probabilities. Exact PPO remains out of scope.
 
 Use:
-- `clip_eps = 0.1` or `0.2`
-- `ppo_epochs = 2-4`
-- `minibatch_size = 8-32 rollout samples`
-- `group_size = samples_per_complex = 4` for smoke runs
-- `max_score_delta = 20.0`
-
-This follows PPO’s clipped-ratio logic while substituting a surrogate score ratio until exact transition densities are available. The group-relative baseline pattern comes directly from GRPO. citeturn29view4turn29view0turn29view3
+- `samples_per_complex = 4`
+- `advantage_normalization = zscore`
+- `minibatch_size = 4-32 rollout samples`
+- `grpo_epochs = 1` for smoke, then 2-4 after stability
 
 ### Checkpointing, logging, and eval hooks
 
@@ -788,12 +723,14 @@ artifacts:
 ```
 
 ```yaml
-# configs/rl/ppo_surrogate_diffdock.yaml
+# configs/rl/grpo_surrogate_diffdock.yaml
 algorithm:
-  name: surrogate_ppo
+  name: grpo_surrogate
   policy_mode: surrogate
-  ppo_epochs: 3
+  surrogate_backend: diffdock_loss
+  grpo_epochs: 3
   minibatch_size: 16
+  learning_rate: 5.0e-5
   on_policy_required: true
 
 model:
@@ -871,7 +808,7 @@ train_manifest.json
   -> periodic eval hook on val_manifest.json
 ```
 
-Use the original baseline `generated_samples_manifest.json` only for reward debugging, offline warm starts, or initial smoke tests. For actual PPO/GRPO training, each update should produce its own rollout manifest from the frozen old policy snapshot. citeturn29view2turn29view3
+Use the original baseline `generated_samples_manifest.json` only for reward debugging, offline warm starts, or initial smoke tests. For actual GRPO training, each update should produce its own rollout manifest from the frozen old policy snapshot. citeturn29view2turn29view3
 
 ### Recommended RL run layout
 
@@ -907,7 +844,7 @@ This avoids a metadata-file explosion while preserving reproducibility.
 
 ### Compute and resource considerations
 
-DiffDock’s public README recommends GPU use for speed and notes that the first run precomputes SO(2)/SO(3) lookup tables. The public inference config also defaults to 20 inference steps and 10 samples per complex. Those details matter because rollout cost scales roughly with `(batch_complexes × samples_per_complex × inference_steps)` and surrogate PPO adds extra rescoring passes. citeturn5view4turn27view0
+DiffDock’s public README recommends GPU use for speed and notes that the first run precomputes SO(2)/SO(3) lookup tables. The public inference config also defaults to 20 inference steps and 10 samples per complex. Those details matter because rollout cost scales roughly with `(batch_complexes × samples_per_complex × inference_steps)` and GRPO surrogate training adds extra rescoring passes. citeturn5view4turn27view0
 
 Two DiffDock-specific caveats matter immediately. First, the public training path skips batch size 1 because of batchnorm, so tiny RL updates need either batch size ≥ 2, frozen/eval batchnorm, or careful accumulation logic. Second, the public `train.py` and `utils/training.py` do not show AMP/GradScaler usage, so mixed precision is an explicit extension to add rather than an existing capability to rely on. citeturn16view1turn25view0turn25view1turn25view2turn25view3
 
@@ -975,7 +912,7 @@ The 2024 DiffDock follow-up introduces confidence bootstrapping as a separate tr
 | `sample_bb/sample_ang/sample_seq` | No direct modality switches | No analogue | Use smaller rollouts and fewer trainable params |
 | `sθ = -ℓPF(sample)` | `sθ = -ℓDD(sample)` | Partially available | Pseudo-batch scorer |
 | group-relative advantage | Same | Not packaged | `rollouts.compute_group_advantages()` |
-| clipped GRPO/PPO ratio | Same | Not packaged | `train_step_surrogate_ppo()` |
+| GRPO surrogate objective | Same | Not packaged | `train_step_grpo_surrogate()` |
 | supervised anchor | Same | Available | Call standard DiffDock supervised loss each update |
 | reference regularizer | Frozen DiffDock reference | Not packaged | Prediction MSE or adapter-L2 |
 | exact stepwise transition ratio | Exact diffusion log-probs | Not exposed in public path | Defer behind `NotImplementedError` |
@@ -992,11 +929,11 @@ Migrate PepFlow Option2-style post-training to DiffDock.
 
 Initial supported modes:
 
+- offline reward debug (`offline_reward_debug`)
+- GRPO surrogate smoke/training (`grpo_surrogate`)
 - supervised fine-tune (`sft`)
-- surrogate REINFORCE (`reinforce_surrogate`)
-- surrogate PPO (`ppo_surrogate`)
 
-Exact PPO over diffusion transition log-probabilities is deferred until the backend can emit per-step transition statistics.
+Exact PPO over diffusion transition log-probabilities is out of scope until the backend can emit per-step transition statistics.
 
 ## Core idea
 
@@ -1005,9 +942,7 @@ For each complex:
 1. Sample a group of poses from a frozen old policy checkpoint.
 2. Score each final pose with terminal rewards.
 3. Normalize rewards within the group to get advantages.
-4. Compute either:
-   - exact log-prob gradients, if available, or
-   - a surrogate score `s_theta = -ell_DD`.
+4. Compute a surrogate score `s_theta = -ell_DD`.
 5. Update the current score model with:
    - RL loss
    - supervised anchor loss
@@ -1066,21 +1001,15 @@ Each reward returns a `RewardBreakdown`:
 Use DiffDock’s supervised loss only.
 Purpose: verify model loading, optimizer, checkpointing, metrics, and val-hook wiring.
 
-### Surrogate REINFORCE
+### GRPO Surrogate
 
-Use grouped on-policy rollouts.
-If exact log-probs are unavailable, use:
-- terminal reward advantages
-- surrogate sample score `s_theta = -ell_DD`
+Use grouped rollouts with `samples_per_complex = 4`.
+Normalize rewards within each complex and optimize:
+`loss = -mean(advantage * s_theta)`
 
-### Surrogate PPO
-
-Cache old policy rollouts and old surrogate scores.
-Use a clipped ratio:
-`rho = exp(clip(s_new - s_old, -delta, delta))`
-
-Then optimize:
-`min(rho * A, clip(rho, 1-eps, 1+eps) * A)`
+For the first smoke, `s_theta` is a debug-linear surrogate over offline rollout
+features. The production target is:
+`s_theta(pose, complex) = -ell_DD_theta(pose, complex)`.
 
 ## Artifacts
 
@@ -1150,8 +1079,8 @@ gantt
 
     section Training
     SFT smoke path                    :c1, after b2, 5d
-    Surrogate REINFORCE               :c2, after c1, 7d
-    Surrogate PPO                     :c3, after c2, 7d
+    GRPO surrogate smoke              :c2, after c1, 7d
+    DiffDock loss surrogate           :c3, after c2, 7d
 
     section Validation
     Eval-hook integration             :d1, after c3, 5d
@@ -1175,13 +1104,13 @@ gantt
 - Deliverable: supervised training loop on tiny dataset
 - Tests: one optimizer step changes trainable params, resume works, eval hook fires
 
-**Surrogate REINFORCE**
-- Deliverable: on-policy grouped rollouts with group-normalized advantages
+**GRPO Surrogate**
+- Deliverable: grouped rollouts with group-normalized advantages and `loss = -mean(advantage * surrogate_score)`
 - Tests: advantage normalization zero-mean per group, invalid group handling, reward logs produced
 
-**Surrogate PPO**
-- Deliverable: cached old-score rollout buffer + clipped ratio updates
-- Tests: ratio clipping finite, multiple PPO epochs reuse rollout buffer safely, checkpoint-on-failure works
+**DiffDock Loss Surrogate**
+- Deliverable: per-sample `s_theta = -ell_DD_theta` scorer using DiffDock translation, rotation, and torsion losses
+- Tests: per-sample score shape, finite loss values, checkpoint-on-failure works
 
 **Tiny real RL smoke**
 - Deliverable: full end-to-end run on 5-10 real complexes
@@ -1208,4 +1137,4 @@ implemented.
 
 The main unresolved implementation detail is **how exactly to build a stable per-sample pseudo-batch for DiffDock surrogate scoring** against generated poses in your pinned local checkout. The public repo exposes the native loss components and the non-mean loss path, which is why the surrogate approach is plausible, but the exact wrapper code depends on how you import and reuse DiffDock’s preprocessing and graph construction in your environment. citeturn17view0turn17view1
 
-A second limitation is that this report assumes there is **no stable public exact log-prob API** for DiffDock reverse-diffusion transitions in your target checkout. If your local fork already exposes per-step transition statistics, exact PPO can move earlier in the roadmap. Otherwise, surrogate REINFORCE and surrogate PPO are the right first methods.
+A second limitation is that this report assumes there is **no stable public exact log-prob API** for DiffDock reverse-diffusion transitions in your target checkout. If your local fork already exposes per-step transition statistics, exact PPO can move earlier in the roadmap. Otherwise, GRPO surrogate training is the right first method.
