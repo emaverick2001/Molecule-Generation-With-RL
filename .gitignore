@@ -4,8 +4,8 @@ data/
 packaged_runs/
 imported_runs/
 
-# Keep datasets and generated data ignored, but track the reusable DiffDock
-# failed-complex exclusion list.
+# Keep datasets and generated data ignored, but track reusable DiffDock
+# experiment-control files.
 !data/
 data/*
 !data/processed/
@@ -15,6 +15,11 @@ data/processed/diffdock/*
 !data/processed/diffdock/splits/
 data/processed/diffdock/splits/*
 !data/processed/diffdock/splits/exclude_ids.txt
+!data/processed/diffdock/splits/main_eval.txt
+!data/processed/diffdock/manifests/
+data/processed/diffdock/manifests/*
+!data/processed/diffdock/manifests/main_eval_manifest.json
+!data/processed/diffdock/manifests/main_eval_protocol.json
 
 # Local third-party model checkouts. Install with scripts/setup_diffdock.sh.
 external/

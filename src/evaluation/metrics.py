@@ -155,6 +155,32 @@ def _success_at_k(records: list[PoseMetricRecord], k: int, threshold: float) -> 
     return round(sum(successes) / len(successes), 6)
 
 
+def _strict_success_at_k(
+    records: list[PoseMetricRecord],
+    *,
+    attempted_complex_ids: list[str],
+    k: int,
+    threshold: float,
+) -> float | None:
+    if not attempted_complex_ids:
+        return None
+
+    grouped = _group_valid_by_complex(records)
+    successes = []
+
+    for complex_id in attempted_complex_ids:
+        complex_records = grouped.get(complex_id, [])
+        successes.append(
+            len(complex_records) >= k
+            and any(
+                record.rmsd is not None and record.rmsd < threshold
+                for record in complex_records[:k]
+            )
+        )
+
+    return round(sum(successes) / len(attempted_complex_ids), 6)
+
+
 def _group_valid_by_complex(
     records: list[PoseMetricRecord],
 ) -> dict[str, list[PoseMetricRecord]]:
@@ -174,8 +200,14 @@ def aggregate_topk_metrics(
     metric_records: list[PoseMetricRecord],
     top_k: list[int] | None = None,
     success_threshold: float = 2.0,
+    attempted_complex_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     top_k = top_k or [1, 5, 10]
+    attempted_complex_ids = attempted_complex_ids or []
+    generated_complex_ids = sorted({record.complex_id for record in metric_records})
+    missing_generated_complex_ids = sorted(
+        set(attempted_complex_ids) - set(generated_complex_ids)
+    )
     valid_records = [record for record in metric_records if record.valid and record.rmsd is not None]
     invalid_records = [record for record in metric_records if not record.valid]
     grouped = _group_valid_by_complex(metric_records)
@@ -196,7 +228,22 @@ def aggregate_topk_metrics(
     )
 
     aggregate = {
+        "num_attempted_complexes": (
+            len(attempted_complex_ids) if attempted_complex_ids else None
+        ),
         "num_complexes": len({record.complex_id for record in metric_records}),
+        "num_generated_complexes": len(generated_complex_ids),
+        "generation_coverage": (
+            round(len(generated_complex_ids) / len(attempted_complex_ids), 6)
+            if attempted_complex_ids
+            else None
+        ),
+        "num_missing_generated_complexes": (
+            len(missing_generated_complex_ids) if attempted_complex_ids else None
+        ),
+        "missing_generated_complexes": (
+            missing_generated_complex_ids if attempted_complex_ids else []
+        ),
         "num_valid_complexes": len(grouped),
         "num_poses": len(metric_records),
         "num_valid_poses": len(valid_records),
@@ -221,6 +268,12 @@ def aggregate_topk_metrics(
     for k in top_k:
         aggregate[f"success_at_{k}"] = _success_at_k(
             metric_records,
+            k=k,
+            threshold=success_threshold,
+        )
+        aggregate[f"strict_success_at_{k}"] = _strict_success_at_k(
+            metric_records,
+            attempted_complex_ids=attempted_complex_ids,
             k=k,
             threshold=success_threshold,
         )

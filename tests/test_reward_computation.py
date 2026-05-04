@@ -118,6 +118,31 @@ def test_aggregate_topk_metrics_computes_success_rates_and_best_of_n():
     assert aggregate["fraction_rmsd_gt_10"] == 0.0
 
 
+def test_aggregate_topk_metrics_reports_coverage_and_strict_success():
+    records = [
+        _metric("generated_success", 0, 1.0),
+        _metric("generated_fail", 0, 3.0),
+    ]
+
+    aggregate = aggregate_topk_metrics(
+        records,
+        top_k=[1],
+        success_threshold=2.0,
+        attempted_complex_ids=[
+            "generated_success",
+            "generated_fail",
+            "missing_generation",
+        ],
+    )
+
+    assert aggregate["num_attempted_complexes"] == 3
+    assert aggregate["num_generated_complexes"] == 2
+    assert aggregate["generation_coverage"] == pytest.approx(2 / 3)
+    assert aggregate["missing_generated_complexes"] == ["missing_generation"]
+    assert aggregate["success_at_1"] == 0.5
+    assert aggregate["strict_success_at_1"] == pytest.approx(1 / 3)
+
+
 def test_aggregate_topk_metrics_counts_large_rmsd_outliers():
     records = [
         _metric("1abc", 0, 12.0),

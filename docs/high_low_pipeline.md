@@ -763,8 +763,56 @@ example_input = {
 ##### **6. Comparison + Reporting**
 - Compare baseline vs post-trained model
 ###### **Key Components / Deliverables**
-8. [Key files to implement/algorithms/manipulations/components/modules]
-	1. [Key functions to implement/Key considerations/Key behavior]
+1. Freeze the fixed evaluation protocol
+	- Main experiment collection should use one fixed manifest for every method.
+	- Create the frozen manifest from the chosen completed baseline run:
+		```bash
+		uv run python scripts/freeze_evaluation_protocol.py \
+		  --source-run-dir artifacts/runs/<chosen_baseline_run_id> \
+		  --name main_eval \
+		  --split main_eval \
+		  --num-samples 10 \
+		  --exist-ok
+		```
+	- This writes:
+		```text
+		data/processed/diffdock/manifests/main_eval_manifest.json
+		data/processed/diffdock/manifests/main_eval_protocol.json
+		data/processed/diffdock/splits/main_eval.txt
+		```
+	- Use `configs/diffdock/main_eval_top10.yaml` for all DiffDock main-eval runs.
+	- Use `scripts/run_frozen_eval_pipeline.sh` instead of `run_tiny_real_pipeline.sh` once the manifest is frozen:
+		```bash
+		./scripts/run_frozen_eval_pipeline.sh \
+		  --config configs/diffdock/main_eval_top10.yaml \
+		  --seed 42 \
+		  --run-tag main_eval_diffdock \
+		  --include-inputs
+		```
+2. Required table metrics
+	- Always report coverage:
+		- `num_attempted_complexes`
+		- `num_generated_complexes`
+		- `generation_coverage`
+		- `num_missing_generated_complexes`
+	- Report generated-only quality:
+		- `success_at_1`
+		- `success_at_5`
+		- `success_at_10`
+		- `mean_rmsd`
+		- `median_rmsd`
+		- `best_of_n_mean_rmsd`
+		- `median_best_rmsd`
+		- `num_rmsd_gt_10`
+		- `fraction_rmsd_gt_10`
+	- Report strict attempted-set success where failed generation counts as failure:
+		- `strict_success_at_1`
+		- `strict_success_at_5`
+		- `strict_success_at_10`
+3. Recommended final-inference sample count
+	- Use `num_samples: 10` for main experiment collection.
+	- Report rank-1 as the deployed baseline and top-10/oracle as the upper bound.
+	- RL post-trained DiffDock should be evaluated with the same `num_samples: 10` on the same frozen manifest.
 ##### **7. Extension 1: Better Reward Functions**
 - docking score
 - confidence score

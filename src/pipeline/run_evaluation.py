@@ -83,6 +83,7 @@ def run_evaluation(
         pose_metric_records,
         top_k=evaluation_config["top_k"],
         success_threshold=evaluation_config["rmsd_threshold"],
+        attempted_complex_ids=[record.complex_id for record in input_records],
     )
     metrics = {
         "stage": "evaluation",
@@ -148,11 +149,14 @@ def run_evaluation(
         (
             "# Evaluation\n\n"
             f"- Input complexes: {len(input_records)}\n"
+            f"- Generated complexes: {aggregate['num_generated_complexes']}\n"
+            f"- Generation coverage: {aggregate['generation_coverage']}\n"
             f"- Generated poses: {len(generated_records)}\n"
             f"- Valid poses: {aggregate['num_valid_poses']}\n"
             f"- Invalid poses: {aggregate['num_invalid_poses']}\n"
             f"- Mean RMSD: {aggregate['mean_rmsd']}\n"
             f"- Success@1: {aggregate.get('success_at_1')}\n"
+            f"- Strict Success@1: {aggregate.get('strict_success_at_1')}\n"
         ),
         summary_path,
     )
