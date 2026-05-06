@@ -723,6 +723,12 @@ example_input = {
 		  `s_theta = -DiffDock_loss_theta`.
 		- Can call DiffDock's native `loss_function(..., apply_mean=False)` once a
 		  model, `t_to_sigma`, and checkout-specific batch builder are supplied.
+	- `src/rl/diffdock_batch_builder.py`
+		- Builds DiffDock native-loss batches from generated SDF poses.
+		- Reuses DiffDock's `InferenceDataset` for receptor/ligand graph construction.
+		- Replaces the generated ligand coordinates into the graph and applies
+		  DiffDock's `NoiseTransform` so `tr_score`, `rot_score`, and `tor_score`
+		  labels are available for `loss_function(..., apply_mean=False)`.
 	- `src/rl/train.py`
 		- Implements `offline_reward_debug`.
 		- Implements `grpo_surrogate` for a one-step smoke update over grouped rollouts.
@@ -733,6 +739,9 @@ example_input = {
 		- Raises a clear `NotImplementedError` if `diffdock_loss` is requested without a concrete backend.
 	- `scripts/check_diffdock_loss_backend.py`
 		- Checks that `external/DiffDock/utils/training.py::loss_function` can be imported on ICRN.
+	- `scripts/check_diffdock_batch_builder.py`
+		- Checks that a completed rollout run can be converted into DiffDock
+		  graph batches for the native loss backend on ICRN.
 	- `src/pipeline/run_posttraining.py`
 		- Creates the posttraining run skeleton.
 		- Dispatches to the offline reward-debug workflow.
@@ -781,6 +790,15 @@ example_input = {
 		  --source-run-dir artifacts/runs/<one_complex_top4_run_id> \
 		  --run-tag <tag>_grpo
 		```
+	- DiffDock native-loss batch-builder smoke on ICRN:
+		```bash
+		./scripts/check_diffdock_batch_builder.py \
+		  artifacts/runs/<one_complex_top4_run_id> \
+		  --repo-root external/DiffDock \
+		  --model-dir external/DiffDock/workdir/v1.1/score_model \
+		  --limit 4 \
+		  --no-lm-embeddings
+		```
 
 3. What this validates
 	- Generated poses can be converted into RL examples.
@@ -796,9 +814,8 @@ example_input = {
 	- Wire `src/rl/agent.py` into real in-process DiffDock model loading.
 	- Add a supervised fine-tuning smoke run before reward-driven training.
 	- Add in-process rollout generation from a frozen old-policy snapshot.
-	- Implement the checkout-specific DiffDock `batch_builder` that turns final
-	  SDF poses into graph batches with the score labels expected by DiffDock's
-	  native loss function.
+	- Verify the DiffDock `batch_builder` on ICRN with the real external checkout
+	  and the exact model config used for inference.
 	- Replace the debug-linear GRPO training loop with the native
 	  `DiffDockLossBackend` and a real optimizer step over DiffDock trainable parameters.
 	- Exact PPO remains out of scope because DiffDock transition log-probs are not instrumented.

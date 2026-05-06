@@ -447,6 +447,8 @@ def main(config_path: str | Path) -> int: ...
 - `run_grpo_surrogate` is the first reward-driven stage. It uses grouped rollouts, per-complex normalized rewards, and the objective `loss = -mean(advantage * surrogate_score)`.
 - The current smoke backend uses a debug-linear surrogate scorer. The production backend should replace that score with `s_theta = -DiffDock_loss_theta`.
 - `src/rl/diffdock_loss.py` owns that production boundary: it combines per-sample `tr_loss`, `rot_loss`, and `tor_loss`, and can call DiffDock's native `loss_function(..., apply_mean=False)` when given a model, `t_to_sigma`, and checkout-specific batch builder.
+- `src/rl/diffdock_batch_builder.py` provides the first concrete batch-builder bridge: it converts generated SDF poses into DiffDock graph batches by reusing `InferenceDataset`, replacing ligand coordinates, and applying `NoiseTransform` so the native loss labels are present.
+- `scripts/check_diffdock_batch_builder.py` should pass on ICRN before replacing the debug-linear scorer with native DiffDock-loss scoring.
 - `maybe_run_eval_hook` must call out to external evaluation code. The RL package should not own full benchmark evaluation.
 
 **Error handling**
