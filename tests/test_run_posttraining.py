@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.pipeline.run_posttraining import run_posttraining
@@ -167,3 +168,67 @@ def test_run_posttraining_grpo_surrogate_creates_checkpoint(tmp_path):
     assert (run_dir / "rollouts" / "grpo_step_000" / "surrogate_scores.csv").is_file()
     assert summary["algorithm"] == "grpo_surrogate"
     assert grpo_summary["final_loss"] < grpo_summary["initial_loss"]
+
+
+def test_run_posttraining_diffdock_loss_backend_requires_model_adapter(tmp_path):
+    source_run = tmp_path / "source_run"
+    source_run.mkdir()
+    reference = source_run / "ligand_gt.sdf"
+    pose = source_run / "pose.sdf"
+    reference.write_text(_sdf([("C", 0.0, 0.0, 0.0)]), encoding="utf-8")
+    pose.write_text(_sdf([("C", 0.0, 0.0, 0.0)]), encoding="utf-8")
+
+    (source_run / "input_manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "complex_id": "1abc",
+                    "protein_path": str(source_run / "protein.pdb"),
+                    "ligand_path": str(source_run / "ligand.sdf"),
+                    "ground_truth_pose_path": str(reference),
+                    "split": "train",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (source_run / "generated_samples_manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "complex_id": "1abc",
+                    "sample_id": 0,
+                    "pose_path": str(pose),
+                    "confidence_score": 0.0,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "diffdock_loss.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {
+                    "name": "test",
+                    "model": "diffdock",
+                    "mode": "posttraining_grpo_surrogate_smoke",
+                    "seed": 7,
+                },
+                "algorithm": {
+                    "name": "grpo_surrogate",
+                    "surrogate_backend": "diffdock_loss",
+                },
+                "data": {"source_run_dir": str(source_run)},
+                "reward": {"weights": {"rmsd": 1.0}},
+                "artifacts": {
+                    "run_root": str(tmp_path / "runs"),
+                    "run_tag": "diffdock-loss-unit",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(NotImplementedError, match="batch_builder"):
+        run_posttraining(config_path)

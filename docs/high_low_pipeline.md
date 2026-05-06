@@ -717,14 +717,22 @@ example_input = {
 		- Implements the first GRPO objective shape over offline rollouts:
 		  `loss = -mean(advantage * surrogate_score)`.
 		- Provides a trainable debug-linear surrogate scorer and checkpoint writer.
+	- `src/rl/diffdock_loss.py`
+		- Implements the DiffDock-loss surrogate adapter boundary.
+		- Combines per-sample `tr_loss`, `rot_loss`, and `tor_loss` into
+		  `s_theta = -DiffDock_loss_theta`.
+		- Can call DiffDock's native `loss_function(..., apply_mean=False)` once a
+		  model, `t_to_sigma`, and checkout-specific batch builder are supplied.
 	- `src/rl/train.py`
 		- Implements `offline_reward_debug`.
 		- Implements `grpo_surrogate` for a one-step smoke update over grouped rollouts.
 		- Produces `rollout.jsonl`, `rewards.csv`, `reward_summary.json`, `group_summary.json`, and `logs/train_metrics.jsonl`.
 	- `src/rl/agent.py`
 		- Adds the `DiffDockRLAgent` wrapper boundary.
-		- Supports debug-linear surrogate scoring, checkpoint save/load, freeze/unfreeze, and CLI-backed grouped generation.
-		- Raises a clear `NotImplementedError` for the real DiffDock-loss surrogate hook.
+		- Supports debug-linear and DiffDock-loss surrogate scoring, checkpoint save/load, freeze/unfreeze, and CLI-backed grouped generation.
+		- Raises a clear `NotImplementedError` if `diffdock_loss` is requested without a concrete backend.
+	- `scripts/check_diffdock_loss_backend.py`
+		- Checks that `external/DiffDock/utils/training.py::loss_function` can be imported on ICRN.
 	- `src/pipeline/run_posttraining.py`
 		- Creates the posttraining run skeleton.
 		- Dispatches to the offline reward-debug workflow.
@@ -788,8 +796,11 @@ example_input = {
 	- Wire `src/rl/agent.py` into real in-process DiffDock model loading.
 	- Add a supervised fine-tuning smoke run before reward-driven training.
 	- Add in-process rollout generation from a frozen old-policy snapshot.
-	- Implement surrogate scoring with DiffDock loss components using per-sample losses.
-	- Replace the debug-linear GRPO surrogate with `s_theta = -DiffDock_loss_theta`.
+	- Implement the checkout-specific DiffDock `batch_builder` that turns final
+	  SDF poses into graph batches with the score labels expected by DiffDock's
+	  native loss function.
+	- Replace the debug-linear GRPO training loop with the native
+	  `DiffDockLossBackend` and a real optimizer step over DiffDock trainable parameters.
 	- Exact PPO remains out of scope because DiffDock transition log-probs are not instrumented.
 ##### **6. Comparison + Reporting**
 - Compare baseline vs post-trained model

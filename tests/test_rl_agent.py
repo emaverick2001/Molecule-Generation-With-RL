@@ -1,6 +1,7 @@
 import pytest
 
 from src.rl.agent import DiffDockRLAgent
+from src.rl.diffdock_loss import DiffDockLossBackend
 from src.rl.grpo import LinearSurrogateState
 from src.rl.types import RLExample
 
@@ -40,6 +41,22 @@ def test_agent_diffdock_loss_surrogate_raises_clear_error():
 
     with pytest.raises(NotImplementedError, match="DiffDock-loss surrogate"):
         agent.compute_surrogate_scores([_example()])
+
+
+def test_agent_diffdock_loss_surrogate_uses_backend():
+    backend = DiffDockLossBackend(
+        lambda examples: {
+            "tr_loss": [1.0 for _ in examples],
+            "rot_loss": [2.0 for _ in examples],
+            "tor_loss": [3.0 for _ in examples],
+        }
+    )
+    agent = DiffDockRLAgent(
+        surrogate_backend="diffdock_loss",
+        diffdock_loss_backend=backend,
+    )
+
+    assert agent.compute_surrogate_scores([_example()]) == pytest.approx([-6.0])
 
 
 def test_agent_exact_logprobs_are_out_of_scope():

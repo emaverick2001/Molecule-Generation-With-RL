@@ -144,6 +144,16 @@ def run_offline_reward_debug(cfg: RLConfig, run_dir: str | Path) -> TrainSummary
 
 
 def run_grpo_surrogate(cfg: RLConfig, run_dir: str | Path) -> TrainSummary:
+    if cfg.algorithm.surrogate_backend == "diffdock_loss":
+        raise NotImplementedError(
+            "The DiffDock-loss surrogate backend is implemented as an agent-level "
+            "adapter, but the posttraining pipeline still needs a concrete "
+            "DiffDock model loader and batch_builder before it can update model "
+            "weights. Use surrogate_backend=debug_linear for the current smoke "
+            "pipeline, or instantiate DiffDockRLAgent with a DiffDockLossBackend "
+            "for backend integration tests."
+        )
+
     run_dir = Path(run_dir)
     rollout_dir = run_dir / "rollouts" / "grpo_step_000"
     logs_dir = run_dir / "logs"

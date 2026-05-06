@@ -221,15 +221,6 @@ def validate_rl_config(cfg: RLConfig) -> None:
         raise ValueError("algorithm.learning_rate must be positive")
     if cfg.algorithm.surrogate_backend not in {"debug_linear", "diffdock_loss"}:
         raise ValueError("Unsupported algorithm.surrogate_backend")
-    if (
-        cfg.algorithm.name == "grpo_surrogate"
-        and cfg.algorithm.surrogate_backend == "diffdock_loss"
-    ):
-        raise NotImplementedError(
-            "DiffDock-loss surrogate scoring is not wired yet. Use "
-            "surrogate_backend=debug_linear for the GRPO smoke path."
-        )
-
     if cfg.rollout.samples_per_complex <= 0:
         raise ValueError("rollout.samples_per_complex must be positive")
     if cfg.rollout.min_valid_samples_per_complex <= 0:

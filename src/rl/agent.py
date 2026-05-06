@@ -5,6 +5,7 @@ from typing import Sequence
 
 from src.generation.generate_diffdock import generate_diffdock_poses
 from src.rl.data import join_samples_with_complex_manifest
+from src.rl.diffdock_loss import DiffDockLossBackend
 from src.rl.grpo import (
     LinearSurrogateState,
     linear_surrogate_score,
@@ -21,8 +22,8 @@ class DiffDockRLAgent:
 
     The current production-ready backend is `debug_linear`, which is a small
     trainable surrogate used to validate GRPO loss signs and checkpointing. The
-    real DiffDock-loss backend is intentionally explicit and raises until the
-    external DiffDock training graph/loss adapter is wired in.
+    DiffDock-loss backend is intentionally explicit: callers must pass a
+    concrete loss adapter for their local DiffDock checkout.
     """
 
     def __init__(
@@ -37,6 +38,7 @@ class DiffDockRLAgent:
         trainable_mode: str = "last_layers",
         surrogate_backend: str = "debug_linear",
         linear_state: LinearSurrogateState | None = None,
+        diffdock_loss_backend: DiffDockLossBackend | None = None,
     ) -> None:
         if surrogate_backend not in {"debug_linear", "diffdock_loss"}:
             raise ValueError(f"Unsupported surrogate backend: {surrogate_backend}")
@@ -54,6 +56,7 @@ class DiffDockRLAgent:
         self.trainable_mode = trainable_mode
         self.surrogate_backend = surrogate_backend
         self.linear_state = linear_state or LinearSurrogateState.initialized()
+        self.diffdock_loss_backend = diffdock_loss_backend
         self.trainable = trainable_mode != "none"
 
     @classmethod
@@ -110,6 +113,7 @@ class DiffDockRLAgent:
             trainable_mode="none",
             surrogate_backend=self.surrogate_backend,
             linear_state=self.linear_state,
+            diffdock_loss_backend=self.diffdock_loss_backend,
         )
         agent.freeze()
         return agent
@@ -181,11 +185,15 @@ class DiffDockRLAgent:
             ]
 
         if mode == "diffdock_loss":
+            if self.diffdock_loss_backend is not None:
+                return self.diffdock_loss_backend.score_examples(examples)
+
             raise NotImplementedError(
                 "DiffDock-loss surrogate scoring requires an in-process adapter "
                 "to external/DiffDock training graph construction and per-sample "
-                "tr/rot/tor losses. The GRPO smoke path currently uses "
-                "debug_linear."
+                "tr/rot/tor losses. Pass a DiffDockLossBackend or "
+                "NativeDiffDockLossBackend into DiffDockRLAgent to enable "
+                "s_theta = -DiffDock_loss_theta."
             )
 
         raise ValueError(f"Unsupported scoring mode: {mode}")
