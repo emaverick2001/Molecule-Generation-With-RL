@@ -22,6 +22,46 @@ $$$$
 """
 
 
+def _write_source_run_with_generated_poses(tmp_path, *, xs):
+    source_run = tmp_path / "source_run"
+    source_run.mkdir()
+    reference = source_run / "ligand_gt.sdf"
+    reference.write_text(_sdf([("C", 0.0, 0.0, 0.0)]), encoding="utf-8")
+
+    generated = []
+    for sample_id, x in enumerate(xs):
+        pose = source_run / f"pose_{sample_id}.sdf"
+        pose.write_text(_sdf([("C", x, 0.0, 0.0)]), encoding="utf-8")
+        generated.append(
+            {
+                "complex_id": "1abc",
+                "sample_id": sample_id,
+                "pose_path": str(pose),
+                "confidence_score": 1.0 - sample_id * 0.1,
+            }
+        )
+
+    (source_run / "input_manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "complex_id": "1abc",
+                    "protein_path": str(source_run / "protein.pdb"),
+                    "ligand_path": str(source_run / "ligand.sdf"),
+                    "ground_truth_pose_path": str(reference),
+                    "split": "train",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (source_run / "generated_samples_manifest.json").write_text(
+        json.dumps(generated),
+        encoding="utf-8",
+    )
+    return source_run
+
+
 def test_run_posttraining_offline_reward_debug_creates_artifacts(tmp_path):
     source_run = tmp_path / "source_run"
     source_run.mkdir()
@@ -91,41 +131,9 @@ def test_run_posttraining_offline_reward_debug_creates_artifacts(tmp_path):
 
 
 def test_run_posttraining_grpo_surrogate_creates_checkpoint(tmp_path):
-    source_run = tmp_path / "source_run"
-    source_run.mkdir()
-    reference = source_run / "ligand_gt.sdf"
-    reference.write_text(_sdf([("C", 0.0, 0.0, 0.0)]), encoding="utf-8")
-
-    generated = []
-    for sample_id, x in enumerate([0.0, 0.3, 0.8, 1.2]):
-        pose = source_run / f"pose_{sample_id}.sdf"
-        pose.write_text(_sdf([("C", x, 0.0, 0.0)]), encoding="utf-8")
-        generated.append(
-            {
-                "complex_id": "1abc",
-                "sample_id": sample_id,
-                "pose_path": str(pose),
-                "confidence_score": 1.0 - sample_id * 0.1,
-            }
-        )
-
-    (source_run / "input_manifest.json").write_text(
-        json.dumps(
-            [
-                {
-                    "complex_id": "1abc",
-                    "protein_path": str(source_run / "protein.pdb"),
-                    "ligand_path": str(source_run / "ligand.sdf"),
-                    "ground_truth_pose_path": str(reference),
-                    "split": "train",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (source_run / "generated_samples_manifest.json").write_text(
-        json.dumps(generated),
-        encoding="utf-8",
+    source_run = _write_source_run_with_generated_poses(
+        tmp_path,
+        xs=[0.0, 0.3, 0.8, 1.2],
     )
     config_path = tmp_path / "grpo.yaml"
     config_path.write_text(

@@ -9,6 +9,12 @@ from src.rl.data import (
     load_offline_rl_examples,
     write_rollout_manifest,
 )
+from src.rl.diffdock_loss import (
+    DiffDockLossSurrogateState,
+    build_diffdock_loss_score_rows,
+    save_diffdock_loss_surrogate_checkpoint,
+    train_diffdock_loss_grpo_step,
+)
 from src.rl.grpo import (
     LinearSurrogateState,
     build_surrogate_score_rows,
@@ -188,8 +194,6 @@ def run_grpo_surrogate(cfg: RLConfig, run_dir: str | Path) -> TrainSummary:
         build_surrogate_score_rows(rollout_records, state),
         rollout_dir / "surrogate_scores.csv",
     )
-    save_json(train_metrics, rollout_dir / "grpo_train_metrics.json")
-    write_jsonl(train_metrics, logs_dir / "train_metrics.jsonl")
     checkpoint_path = checkpoint_dir / "grpo_debug_linear_step1.json"
     save_linear_surrogate_checkpoint(
         state,
@@ -197,11 +201,102 @@ def run_grpo_surrogate(cfg: RLConfig, run_dir: str | Path) -> TrainSummary:
         metadata={
             "algorithm": cfg.algorithm.name,
             "surrogate_backend": cfg.algorithm.surrogate_backend,
-            "num_examples": len(examples),
+            "num_examples": num_examples,
             "num_rollout_records": len(rollout_records),
             "grpo_epochs": cfg.algorithm.grpo_epochs,
         },
     )
+    return train_metrics, checkpoint_path
+
+
+def _run_diffdock_loss_grpo_backend(
+    cfg: RLConfig,
+    rollout_records: list,
+    checkpoint_dir: Path,
+    rollout_dir: Path,
+    *,
+    num_examples: int,
+) -> tuple[list[dict], Path]:
+    state = DiffDockLossSurrogateState.initialized()
+    train_metrics = []
+
+    for epoch in range(cfg.algorithm.grpo_epochs):
+        state, step_metrics = train_diffdock_loss_grpo_step(
+            rollout_records,
+            state,
+            learning_rate=cfg.algorithm.learning_rate,
+            sigma_angstrom=cfg.reward.sigma_angstrom,
+        )
+        step_metrics["epoch"] = epoch
+        step_metrics["algorithm"] = cfg.algorithm.name
+        step_metrics["surrogate_backend"] = cfg.algorithm.surrogate_backend
+        train_metrics.append(step_metrics)
+
+    save_csv(
+        build_diffdock_loss_score_rows(
+            rollout_records,
+            state,
+            sigma_angstrom=cfg.reward.sigma_angstrom,
+        ),
+        rollout_dir / "surrogate_scores.csv",
+    )
+    checkpoint_path = checkpoint_dir / "grpo_diffdock_loss_step1.json"
+    save_diffdock_loss_surrogate_checkpoint(
+        state,
+        checkpoint_path,
+        metadata={
+            "algorithm": cfg.algorithm.name,
+            "surrogate_backend": cfg.algorithm.surrogate_backend,
+            "num_examples": num_examples,
+            "num_rollout_records": len(rollout_records),
+            "grpo_epochs": cfg.algorithm.grpo_epochs,
+            "note": (
+                "This checkpoint stores the lightweight DiffDock-loss proxy "
+                "calibration state. It does not contain DiffDock model weights yet."
+            ),
+        },
+    )
+    return train_metrics, checkpoint_path
+
+
+def run_grpo_surrogate(cfg: RLConfig, run_dir: str | Path) -> TrainSummary:
+    run_dir = Path(run_dir)
+    rollout_dir = run_dir / "rollouts" / "grpo_step_000"
+    logs_dir = run_dir / "logs"
+    checkpoint_dir = run_dir / "checkpoints"
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    examples, rollout_records = _build_offline_rollout_records(cfg)
+    rollout_metrics = _write_rollout_artifacts(
+        cfg,
+        run_dir,
+        rollout_dir,
+        rollout_records,
+    )
+
+    if cfg.algorithm.surrogate_backend == "debug_linear":
+        train_metrics, checkpoint_path = _run_debug_linear_grpo_backend(
+            cfg,
+            rollout_records,
+            checkpoint_dir,
+            rollout_dir,
+            num_examples=len(examples),
+        )
+    elif cfg.algorithm.surrogate_backend == "diffdock_loss":
+        train_metrics, checkpoint_path = _run_diffdock_loss_grpo_backend(
+            cfg,
+            rollout_records,
+            checkpoint_dir,
+            rollout_dir,
+            num_examples=len(examples),
+        )
+    else:
+        raise ValueError(f"Unsupported surrogate backend: {cfg.algorithm.surrogate_backend}")
+
+    save_json(train_metrics, rollout_dir / "grpo_train_metrics.json")
+    write_jsonl(train_metrics, logs_dir / "train_metrics.jsonl")
 
     reward_summary = rollout_metrics["reward"]
     group_summary = rollout_metrics["groups"]
@@ -229,13 +324,15 @@ def run_grpo_surrogate(cfg: RLConfig, run_dir: str | Path) -> TrainSummary:
             f"- Rollout records: {len(rollout_records)}",
             f"- Groups: {group_summary['num_groups']}",
             f"- Valid rewards: {reward_summary['num_valid_rewards']}",
+            f"- Surrogate backend: {cfg.algorithm.surrogate_backend}",
             f"- Initial loss: {final_metrics['training']['initial_loss']}",
             f"- Final loss: {final_metrics['training']['final_loss']}",
             f"- Checkpoint: {checkpoint_path}",
             "",
             "This run validates the GRPO objective shape over grouped rollouts. "
-            "The current surrogate backend is a trainable debug-linear scorer; "
-            "the DiffDock loss backend remains the next implementation hook.",
+            "The diffdock_loss backend currently uses a DiffDock-loss proxy seam; "
+            "the next production step is replacing that proxy with an in-process "
+            "per-pose DiffDock loss call and updating DiffDock model weights.",
             "",
         ]
     )
