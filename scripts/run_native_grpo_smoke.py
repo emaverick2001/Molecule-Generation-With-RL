@@ -50,6 +50,7 @@ def _load_smoke_rollout_records(
     *,
     source_run_dir: Path,
     limit: int,
+    samples_per_complex: int,
     min_valid_samples: int,
 ) -> tuple[list, list]:
     examples = load_offline_rl_examples(
@@ -61,13 +62,6 @@ def _load_smoke_rollout_records(
     if not examples:
         raise ValueError(f"No generated examples found in run: {source_run_dir}")
 
-    complex_ids = {example.complex_id for example in examples}
-    if len(complex_ids) != 1:
-        raise ValueError(
-            "Native GRPO smoke expects one complex group. "
-            f"Got complexes: {', '.join(sorted(complex_ids))}"
-        )
-
     rollout_records = build_rollout_records(
         examples,
         reward_cfg=RewardConfig(weights={"rmsd": 1.0, "confidence": 0.0}),
@@ -75,7 +69,7 @@ def _load_smoke_rollout_records(
     rollout_records = compute_group_advantages(
         rollout_records,
         rollout_cfg=RolloutConfig(
-            samples_per_complex=limit,
+            samples_per_complex=samples_per_complex,
             advantage_normalization="zscore",
             min_valid_samples_per_complex=min_valid_samples,
             invalid_group_action="zero",
@@ -141,6 +135,15 @@ def main() -> None:
     parser.add_argument("--ckpt", default="best_ema_inference_epoch_model.pt")
     parser.add_argument("--model-args", default=None)
     parser.add_argument("--limit", type=int, default=4)
+    parser.add_argument(
+        "--samples-per-complex",
+        type=int,
+        default=None,
+        help=(
+            "Grouped rollout size for advantage normalization. Defaults to "
+            "--limit for one-complex smoke runs."
+        ),
+    )
     parser.add_argument("--min-valid-samples", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1.0e-6)
     parser.add_argument("--clip-epsilon", type=float, default=0.2)
@@ -172,6 +175,9 @@ def main() -> None:
 
     if args.limit <= 0:
         raise ValueError("--limit must be positive")
+    samples_per_complex = args.samples_per_complex or args.limit
+    if samples_per_complex <= 0:
+        raise ValueError("--samples-per-complex must be positive")
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive")
 
@@ -196,6 +202,7 @@ def main() -> None:
     examples, rollout_records = _load_smoke_rollout_records(
         source_run_dir=source_run_dir,
         limit=args.limit,
+        samples_per_complex=samples_per_complex,
         min_valid_samples=args.min_valid_samples,
     )
     device = _select_device(args.device)
@@ -261,6 +268,7 @@ def main() -> None:
                 "model_dir": args.model_dir,
                 "ckpt": args.ckpt,
                 "seed": args.seed,
+                "samples_per_complex": samples_per_complex,
                 "learning_rate": args.learning_rate,
                 "clip_epsilon": args.clip_epsilon,
                 "max_score_delta": args.max_score_delta,
@@ -291,6 +299,7 @@ def main() -> None:
         "source_run_dir": str(source_run_dir),
         "num_examples": len(examples),
         "num_rollout_records": len(rollout_records),
+        "samples_per_complex": samples_per_complex,
         "reward": reward_summary,
         "training": {
             "loss": result.loss,
