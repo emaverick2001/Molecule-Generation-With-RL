@@ -159,6 +159,8 @@ def _run_debug_linear_grpo_backend(
             rollout_records,
             state,
             learning_rate=cfg.algorithm.learning_rate,
+            clip_epsilon=cfg.algorithm.clip_epsilon,
+            max_score_delta=cfg.algorithm.max_score_delta,
         )
         step_metrics["epoch"] = epoch
         step_metrics["algorithm"] = cfg.algorithm.name
@@ -166,7 +168,12 @@ def _run_debug_linear_grpo_backend(
         train_metrics.append(step_metrics)
 
     save_csv(
-        build_surrogate_score_rows(rollout_records, state),
+        build_surrogate_score_rows(
+            rollout_records,
+            state,
+            clip_epsilon=cfg.algorithm.clip_epsilon,
+            max_score_delta=cfg.algorithm.max_score_delta,
+        ),
         rollout_dir / "surrogate_scores.csv",
     )
     checkpoint_path = checkpoint_dir / "grpo_debug_linear_step1.json"
@@ -179,6 +186,8 @@ def _run_debug_linear_grpo_backend(
             "num_examples": num_examples,
             "num_rollout_records": len(rollout_records),
             "grpo_epochs": cfg.algorithm.grpo_epochs,
+            "clip_epsilon": cfg.algorithm.clip_epsilon,
+            "max_score_delta": cfg.algorithm.max_score_delta,
         },
     )
     return train_metrics, checkpoint_path

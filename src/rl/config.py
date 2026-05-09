@@ -31,6 +31,8 @@ class AlgorithmConfig:
     minibatch_size: int = 8
     learning_rate: float = 0.05
     surrogate_backend: str = "debug_linear"
+    clip_epsilon: float = 0.2
+    max_score_delta: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,10 @@ def parse_rl_config(data: dict[str, Any]) -> RLConfig:
             minibatch_size=int(algorithm.get("minibatch_size", 8)),
             learning_rate=float(algorithm.get("learning_rate", 0.05)),
             surrogate_backend=algorithm.get("surrogate_backend", "debug_linear"),
+            clip_epsilon=float(
+                algorithm.get("clip_epsilon", algorithm.get("clip_eps", 0.2))
+            ),
+            max_score_delta=float(algorithm.get("max_score_delta", 20.0)),
         ),
         data=DataConfig(
             source_run_dir=data_cfg.get("source_run_dir"),
@@ -219,6 +225,10 @@ def validate_rl_config(cfg: RLConfig) -> None:
         raise ValueError("algorithm.grpo_epochs must be positive")
     if cfg.algorithm.learning_rate <= 0:
         raise ValueError("algorithm.learning_rate must be positive")
+    if cfg.algorithm.clip_epsilon <= 0:
+        raise ValueError("algorithm.clip_epsilon must be positive")
+    if cfg.algorithm.max_score_delta <= 0:
+        raise ValueError("algorithm.max_score_delta must be positive")
     if cfg.algorithm.surrogate_backend not in {"debug_linear", "diffdock_loss"}:
         raise ValueError("Unsupported algorithm.surrogate_backend")
 

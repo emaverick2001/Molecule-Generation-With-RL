@@ -714,8 +714,9 @@ example_input = {
 		- Computes per-complex group-relative advantages with `zscore`, `center`, or `rank`.
 		- Keeps group size at 4 for the current GRPO smoke/training path.
 	- `src/rl/grpo.py`
-		- Implements the first GRPO objective shape over offline rollouts:
-		  `loss = -mean(advantage * surrogate_score)`.
+		- Implements the PepFlow Option-2 clipped surrogate ratio objective over
+		  grouped final samples:
+		  `loss = -mean(min(ratio * advantage, clipped_ratio * advantage))`.
 		- Provides a trainable debug-linear surrogate scorer and checkpoint writer.
 	- `src/rl/diffdock_loss.py`
 		- Implements the DiffDock-loss surrogate adapter boundary.
@@ -782,6 +783,9 @@ example_input = {
 	  offline RL reward/advantage workflow, runs one GRPO surrogate update, and
 	  packages the rollout, reward-debug, and GRPO smoke artifacts. It does not
 	  update DiffDock score-model weights yet.
+	- This is a smoke/debug path only. Real Option2 GRPO should generate fresh
+	  grouped rollouts on the fly from `theta_old` for each update, then update
+	  the DiffDock sampling model and repeat.
 
 	- GRPO-only command after a 4-sample smoke/baseline run:
 		```bash

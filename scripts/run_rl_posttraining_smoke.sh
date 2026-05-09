@@ -29,7 +29,9 @@ This script runs a one-complex RL smoke workflow:
   6. Package baseline and posttraining artifacts
 
 The GRPO smoke validates objective signs and checkpoint artifacts with a
-debug-linear surrogate. It does not update DiffDock score-model weights yet.
+debug-linear surrogate over an existing rollout. Real Option2 training should
+generate fresh grouped rollouts on the fly from theta_old at each update and
+then update the DiffDock sampling model.
 EOF
 }
 

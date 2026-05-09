@@ -6,12 +6,11 @@
 # entrypoint.
 #
 # Current implementation note:
-# - The backend uses a lightweight DiffDock-loss proxy derived from the RMSD
-#   reward path.
-# - It does NOT update DiffDock model weights yet.
-# - The production hook is:
+# - This config selects the production Option-2 backend target:
 #       s_theta = -DiffDock_loss_theta(pose, complex)
-#   where the proxy should be replaced by an in-process per-pose DiffDock loss.
+# - The posttraining CLI will reject this until a concrete DiffDock model loader
+#   is wired to NativeDiffDockLossBackend.
+# - That score uses per-sample tr/rot/tor loss components.
 
 experiment:
   name: diffdock_rl
@@ -26,6 +25,8 @@ algorithm:
   grpo_epochs: 1
   minibatch_size: 4
   learning_rate: 0.05
+  clip_epsilon: 0.2
+  max_score_delta: 20.0
 
 data:
   # Override this from the CLI:

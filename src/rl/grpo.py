@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import exp
 from pathlib import Path
 from statistics import mean
 from typing import Sequence
@@ -66,13 +67,77 @@ def _valid_grpo_records(records: Sequence[RolloutRecord]) -> list[RolloutRecord]
     return valid_records
 
 
+def _old_surrogate_score(record: RolloutRecord) -> float:
+    if record.old_surrogate_score is None:
+        return 0.0
+    return float(record.old_surrogate_score)
+
+
+def compute_surrogate_ratio(
+    new_score: float,
+    old_score: float,
+    *,
+    max_score_delta: float = 20.0,
+) -> float:
+    delta = max(-max_score_delta, min(max_score_delta, new_score - old_score))
+    return exp(delta)
+
+
+def clip_surrogate_ratio(
+    ratio: float,
+    *,
+    clip_epsilon: float = 0.2,
+) -> float:
+    return max(1.0 - clip_epsilon, min(1.0 + clip_epsilon, ratio))
+
+
+def clipped_grpo_objective_term(
+    *,
+    advantage: float,
+    ratio: float,
+    clip_epsilon: float = 0.2,
+) -> float:
+    clipped_ratio = clip_surrogate_ratio(ratio, clip_epsilon=clip_epsilon)
+    return min(ratio * advantage, clipped_ratio * advantage)
+
+
+def _ratio_has_gradient(
+    *,
+    new_score: float,
+    old_score: float,
+    advantage: float,
+    ratio: float,
+    clip_epsilon: float,
+    max_score_delta: float,
+) -> bool:
+    delta = new_score - old_score
+    if delta <= -max_score_delta or delta >= max_score_delta:
+        return False
+    if advantage >= 0.0 and ratio > 1.0 + clip_epsilon:
+        return False
+    if advantage < 0.0 and ratio < 1.0 - clip_epsilon:
+        return False
+    return True
+
+
 def compute_grpo_surrogate_loss(
     records: Sequence[RolloutRecord],
     state: LinearSurrogateState,
+    *,
+    clip_epsilon: float = 0.2,
+    max_score_delta: float = 20.0,
 ) -> float:
     valid_records = _valid_grpo_records(records)
     terms = [
-        float(record.advantage) * linear_surrogate_score(record, state)
+        clipped_grpo_objective_term(
+            advantage=float(record.advantage),
+            ratio=compute_surrogate_ratio(
+                linear_surrogate_score(record, state),
+                _old_surrogate_score(record),
+                max_score_delta=max_score_delta,
+            ),
+            clip_epsilon=clip_epsilon,
+        )
         for record in valid_records
     ]
 
@@ -84,14 +149,33 @@ def train_linear_grpo_step(
     state: LinearSurrogateState,
     *,
     learning_rate: float,
+    clip_epsilon: float = 0.2,
+    max_score_delta: float = 20.0,
 ) -> tuple[LinearSurrogateState, dict]:
     valid_records = _valid_grpo_records(records)
     gradients = {name: 0.0 for name in FEATURE_NAMES}
 
     for record in valid_records:
         features = extract_linear_surrogate_features(record)
-        for name in FEATURE_NAMES:
-            gradients[name] += -float(record.advantage) * features[name]
+        advantage = float(record.advantage)
+        old_score = _old_surrogate_score(record)
+        new_score = linear_surrogate_score(record, state)
+        ratio = compute_surrogate_ratio(
+            new_score,
+            old_score,
+            max_score_delta=max_score_delta,
+        )
+
+        if _ratio_has_gradient(
+            new_score=new_score,
+            old_score=old_score,
+            advantage=advantage,
+            ratio=ratio,
+            clip_epsilon=clip_epsilon,
+            max_score_delta=max_score_delta,
+        ):
+            for name in FEATURE_NAMES:
+                gradients[name] += -advantage * ratio * features[name]
 
     gradients = {
         name: value / len(valid_records)
@@ -106,8 +190,20 @@ def train_linear_grpo_step(
     metrics = {
         "num_records": len(valid_records),
         "learning_rate": learning_rate,
-        "loss_before": compute_grpo_surrogate_loss(valid_records, state),
-        "loss_after": compute_grpo_surrogate_loss(valid_records, updated_state),
+        "clip_epsilon": clip_epsilon,
+        "max_score_delta": max_score_delta,
+        "loss_before": compute_grpo_surrogate_loss(
+            valid_records,
+            state,
+            clip_epsilon=clip_epsilon,
+            max_score_delta=max_score_delta,
+        ),
+        "loss_after": compute_grpo_surrogate_loss(
+            valid_records,
+            updated_state,
+            clip_epsilon=clip_epsilon,
+            max_score_delta=max_score_delta,
+        ),
         "gradients": gradients,
         "weights_before": state.weights,
         "weights_after": updated_weights,
@@ -119,11 +215,31 @@ def train_linear_grpo_step(
 def build_surrogate_score_rows(
     records: Sequence[RolloutRecord],
     state: LinearSurrogateState,
+    *,
+    clip_epsilon: float = 0.2,
+    max_score_delta: float = 20.0,
 ) -> list[dict]:
     rows = []
 
     for record in records:
         features = extract_linear_surrogate_features(record)
+        surrogate_score = linear_surrogate_score(record, state)
+        old_score = _old_surrogate_score(record)
+        ratio = compute_surrogate_ratio(
+            surrogate_score,
+            old_score,
+            max_score_delta=max_score_delta,
+        )
+        clipped_ratio = clip_surrogate_ratio(ratio, clip_epsilon=clip_epsilon)
+        objective_term = (
+            clipped_grpo_objective_term(
+                advantage=float(record.advantage),
+                ratio=ratio,
+                clip_epsilon=clip_epsilon,
+            )
+            if record.advantage is not None
+            else None
+        )
         rows.append(
             {
                 "complex_id": record.example.complex_id,
@@ -131,7 +247,11 @@ def build_surrogate_score_rows(
                 "rank": record.example.sample_rank,
                 "reward": record.reward.total,
                 "advantage": record.advantage,
-                "surrogate_score": linear_surrogate_score(record, state),
+                "old_surrogate_score": old_score,
+                "surrogate_score": surrogate_score,
+                "surrogate_ratio": ratio,
+                "clipped_surrogate_ratio": clipped_ratio,
+                "clipped_objective_term": objective_term,
                 "confidence": features["confidence"],
                 "inverse_rank": features["inverse_rank"],
             }

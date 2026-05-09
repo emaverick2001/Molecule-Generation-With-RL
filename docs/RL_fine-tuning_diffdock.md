@@ -6,7 +6,7 @@ The highest-confidence way to migrate PepFlow Option2-style fine-tuning to DiffD
 
 DiffDock already provides most of the mechanical pieces needed for this: batched inference over many complexes through a CSV adapter, multiple samples per complex, separate score and confidence checkpoints, ranking by confidence, and per-complex SDF outputs. Its training code already exposes translation, rotation, torsion, and optional backbone/sidechain loss terms, supports non-mean loss computation, logs validation inference metrics, and saves best checkpoints. The practical migration is therefore: implement a typed RL data layer, compute rewards on generated poses, define a DiffDock sample score \(s_\theta = -\ell_{\text{DD}}\), add a ground-truth supervised anchor, add a frozen-reference regularizer, and keep exact PPO out of scope unless sampler instrumentation becomes available. citeturn28view3turn27view0turn17view1turn17view2turn24view1turn24view2turn24view4
 
-Another key conclusion is architectural rather than mathematical: **a single stale `generated_samples_manifest.json` is not enough for real GRPO training**. Baseline generation artifacts are useful for reward debugging and offline warm-start experiments, but actual post-training should produce **step-local rollout manifests** inside the RL run directory. citeturn29view2turn29view3
+Another key conclusion is architectural rather than mathematical: **a single stale `generated_samples_manifest.json` is not enough for real GRPO training**. Baseline generation artifacts are useful for reward debugging, offline warm-start experiments, and smoke tests only. Actual Option2 post-training should repeatedly generate fresh grouped samples on the fly from the current old-policy snapshot, write a step-local rollout manifest, update the sampling model, and then repeat. citeturn29view2turn29view3
 
 Finally, confidence must be handled carefully. DiffDock’s README states that the confidence output is **not a binding affinity prediction**, and also warns that confidence values are hard to compare across different complexes. That makes confidence useful as a pose-quality proxy or auxiliary reward, but not as a standalone global reward scale across targets. RMSD, when available, should remain the primary training-time reward for supervised validation and most initial RL experiments. citeturn5view4
 
@@ -58,12 +58,35 @@ A_i = \frac{r_i - \mu_{g(i)}}{\sigma_{g(i)} + \varepsilon}
 \[
 L_{\text{surrogate-GRPO}}
 =
--\frac{1}{N}\sum_i A_i\,s_\theta(\hat y_i,c_i)
+-\frac{1}{N}\sum_i
+\min\left(\rho_i A_i,\text{clip}(\rho_i,1-\epsilon,1+\epsilon)A_i\right)
 + \lambda_{\text{sup}}L_{\text{sup}}
 + \beta_{\text{ref}}L_{\text{ref}}
 \]
 
+where
+
+\[
+\rho_i =
+\exp\left(s_\theta(\hat y_i,c_i)-s_{\theta_{\text{old}}}(\hat y_i,c_i)\right)
+\]
+
 The critical engineering requirement is that `\ell_DD` be available **per sample**, not only as a batch mean. The public DiffDock loss path already includes an `apply_mean=False` branch, which is the most promising hook for creating a PepFlow-like surrogate score without rewriting the training loss from scratch. citeturn16view0turn17view0turn17view1turn17view2
+
+### Training loop clarification
+
+The model should **not** generate the full experiment dataset once at the beginning and then train on it forever. That is only the current offline debug path. The real DiffDock Option2 loop is:
+
+1. Freeze/copy the current sampler as `theta_old`.
+2. Select a minibatch of complexes from the canonical training manifest.
+3. Generate `G=4` poses per complex with `theta_old` under `torch.no_grad()`.
+4. Score the final poses with RMSD/confidence rewards.
+5. Normalize rewards within each complex to obtain group-relative advantages.
+6. Compute current and old surrogate scores with `s_theta = -ell_DD_theta`.
+7. Apply the clipped surrogate-ratio GRPO update to the current model.
+8. Save a checkpoint and periodically evaluate, then repeat from a new snapshot.
+
+This avoids storing autograd graphs through the full diffusion sampler and avoids training against one permanently stale rollout set.
 
 ## Implementation package and concrete file contracts
 
@@ -444,7 +467,7 @@ def main(config_path: str | Path) -> int: ...
 
 **Behavior**
 - `run_supervised_finetune` is the sanity stage. It proves model loading, optimizer steps, checkpointing, and eval-hook wiring before any RL logic is layered in.
-- `run_grpo_surrogate` is the first reward-driven stage. It uses grouped rollouts, per-complex normalized rewards, and the objective `loss = -mean(advantage * surrogate_score)`.
+- `run_grpo_surrogate` is the first reward-driven stage. It uses grouped rollouts, per-complex normalized rewards, and the clipped Option-2 surrogate ratio objective from the PepFlow note.
 - The current smoke backend uses a debug-linear surrogate scorer. The production backend should replace that score with `s_theta = -DiffDock_loss_theta`.
 - `src/rl/diffdock_loss.py` owns that production boundary: it combines per-sample `tr_loss`, `rot_loss`, and `tor_loss`, and can call DiffDock's native `loss_function(..., apply_mean=False)` when given a model, `t_to_sigma`, and checkout-specific batch builder.
 - `src/rl/diffdock_batch_builder.py` provides the first concrete batch-builder bridge: it converts generated SDF poses into DiffDock graph batches by reusing `InferenceDataset`, replacing ligand coordinates, and applying `NoiseTransform` so the native loss labels are present.
@@ -793,7 +816,7 @@ artifacts:
 
 ### Data flow
 
-The RL stage should treat your canonical manifests as the source of truth and the rollout artifacts as ephemeral step-local data. DiffDock already expects batched tabular input and writes per-complex ranked outputs, so the correct bridge is: canonical manifest → rollout input batch → step-local generated sample manifest → reward join → grouped rollout batch → trainer step. citeturn5view4turn28view3
+The RL stage should treat your canonical manifests as the source of truth and the rollout artifacts as ephemeral step-local data. DiffDock already expects batched tabular input and writes per-complex ranked outputs, so the correct bridge is: canonical manifest → rollout input batch → current old-policy generation → step-local generated sample manifest → reward join → grouped rollout batch → trainer step → updated sampler checkpoint. citeturn5view4turn28view3
 
 Recommended artifact flow:
 
@@ -1007,8 +1030,9 @@ Purpose: verify model loading, optimizer, checkpointing, metrics, and val-hook w
 ### GRPO Surrogate
 
 Use grouped rollouts with `samples_per_complex = 4`.
-Normalize rewards within each complex and optimize:
-`loss = -mean(advantage * s_theta)`
+Normalize rewards within each complex and optimize the clipped Option-2
+surrogate ratio objective:
+`loss = -mean(min(ratio * advantage, clipped_ratio * advantage))`
 
 For the first smoke, `s_theta` is a debug-linear surrogate over offline rollout
 features. The production target is:
@@ -1108,7 +1132,7 @@ gantt
 - Tests: one optimizer step changes trainable params, resume works, eval hook fires
 
 **GRPO Surrogate**
-- Deliverable: grouped rollouts with group-normalized advantages and `loss = -mean(advantage * surrogate_score)`
+- Deliverable: grouped rollouts with group-normalized advantages and the clipped Option-2 surrogate ratio objective
 - Tests: advantage normalization zero-mean per group, invalid group handling, reward logs produced
 
 **DiffDock Loss Surrogate**

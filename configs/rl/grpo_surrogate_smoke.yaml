@@ -1,13 +1,15 @@
 # One-complex GRPO surrogate smoke config.
 #
-# This consumes an existing 4-sample DiffDock rollout run, computes RMSD rewards
-# and group-relative advantages, then performs one GRPO-style update on a small
-# debug-linear surrogate scorer:
+# Smoke-only path: this consumes an existing 4-sample DiffDock rollout run,
+# computes RMSD rewards and group-relative advantages, then performs one
+# GRPO-style update on a small debug-linear surrogate scorer:
 #
-#   loss = -mean(advantage * surrogate_score)
+#   ratio = exp(surrogate_score - old_surrogate_score)
+#   loss = -mean(min(ratio * advantage, clipped_ratio * advantage))
 #
 # It proves the GRPO objective shape, signs, metrics, and checkpoint artifacts.
-# It does not yet update DiffDock score-model weights.
+# Real Option2 training should instead generate fresh grouped rollouts on the
+# fly from theta_old at each update and then update the DiffDock sampling model.
 
 experiment:
   name: diffdock_grpo_smoke
@@ -22,6 +24,8 @@ algorithm:
   grpo_epochs: 1
   minibatch_size: 4
   learning_rate: 0.05
+  clip_epsilon: 0.2
+  max_score_delta: 20.0
 
 data:
   # Override from the CLI:
