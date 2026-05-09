@@ -724,6 +724,10 @@ example_input = {
 		  `s_theta = -DiffDock_loss_theta`.
 		- Can call DiffDock's native `loss_function(..., apply_mean=False)` once a
 		  model, `t_to_sigma`, and checkout-specific batch builder are supplied.
+	- `src/rl/diffdock_model.py`
+		- Loads DiffDock score-model args and checkpoints.
+		- Handles the training-style CUDA scoring path where DiffDock's native
+		  loss uses list batches.
 	- `src/rl/diffdock_batch_builder.py`
 		- Builds DiffDock native-loss batches from generated SDF poses.
 		- Reuses DiffDock's `InferenceDataset` for receptor/ligand graph construction.
@@ -743,6 +747,10 @@ example_input = {
 	- `scripts/check_diffdock_batch_builder.py`
 		- Checks that a completed rollout run can be converted into DiffDock
 		  graph batches for the native loss backend on ICRN.
+	- `scripts/check_diffdock_native_score.py`
+		- Loads the actual DiffDock score model, builds a native-loss batch, runs
+		  `model(batch)`, calls `loss_function(..., apply_mean=False)`, and prints
+		  per-sample `tr_loss`, `rot_loss`, `tor_loss`, and `s_theta`.
 	- `src/pipeline/run_posttraining.py`
 		- Creates the posttraining run skeleton.
 		- Dispatches to the offline reward-debug workflow.
@@ -802,6 +810,16 @@ example_input = {
 		  --model-dir external/DiffDock/workdir/v1.1/score_model \
 		  --limit 4 \
 		  --no-lm-embeddings
+		```
+	- DiffDock native-score smoke on ICRN:
+		```bash
+		./scripts/check_diffdock_native_score.py \
+		  artifacts/runs/<one_complex_top4_run_id> \
+		  --repo-root external/DiffDock \
+		  --model-dir external/DiffDock/workdir/v1.1/score_model \
+		  --limit 4 \
+		  --no-lm-embeddings \
+		  --output-csv artifacts/tmp/native_score_smoke.csv
 		```
 
 3. What this validates
