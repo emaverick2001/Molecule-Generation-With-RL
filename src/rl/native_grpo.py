@@ -106,8 +106,19 @@ def native_loss_components_from_raw(
         )
 
     weights = weights or DiffDockLossWeights()
+    raw_total_loss = _as_1d_tensor(
+        raw_losses[0],
+        torch_module=torch_module,
+        device=device,
+    )
     tr_loss = _as_1d_tensor(raw_losses[1], torch_module=torch_module, device=device)
     target_length = tr_loss.numel()
+    raw_total_loss = _broadcast_tensor(
+        raw_total_loss,
+        target_length=target_length,
+        torch_module=torch_module,
+        device=device,
+    )
     rot_loss = _broadcast_tensor(
         raw_losses[2],
         target_length=target_length,
@@ -120,7 +131,18 @@ def native_loss_components_from_raw(
         torch_module=torch_module,
         device=device,
     )
-    total_loss = weights.tr * tr_loss + weights.rot * rot_loss + weights.tor * tor_loss
+
+    if weights == DiffDockLossWeights():
+        # DiffDock returns detached component losses for logging, but the first
+        # tuple element keeps the differentiable weighted total loss. Use that
+        # total for s_theta so GRPO can update model weights.
+        total_loss = raw_total_loss
+    else:
+        raise NotImplementedError(
+            "Custom DiffDock loss weights are not supported for native GRPO yet "
+            "because DiffDock returns detached component losses. Pass weights "
+            "through loss_function before enabling this."
+        )
 
     return {
         "tr_loss": tr_loss,

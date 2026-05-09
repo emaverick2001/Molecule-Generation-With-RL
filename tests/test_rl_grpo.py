@@ -8,6 +8,7 @@ from src.rl.grpo import (
     compute_surrogate_ratio,
     train_linear_grpo_step,
 )
+from src.rl.native_grpo import native_loss_components_from_raw
 from src.rl.types import RLExample, RewardBreakdown, RolloutRecord
 
 
@@ -108,3 +109,29 @@ def test_train_linear_grpo_step_stops_gradient_when_ratio_is_clipped():
 
     assert metrics["gradients"]["bias"] == pytest.approx(0.0)
     assert updated_state.weights["bias"] == pytest.approx(2.0)
+
+
+def test_native_loss_components_keep_differentiable_total_loss():
+    torch = pytest.importorskip("torch")
+    parameter = torch.tensor([2.0, 3.0], requires_grad=True)
+    raw_total_loss = parameter * 2.0
+    detached_component = raw_total_loss.detach()
+
+    components = native_loss_components_from_raw(
+        (
+            raw_total_loss,
+            detached_component + 1.0,
+            detached_component + 2.0,
+            detached_component + 3.0,
+        ),
+        torch_module=torch,
+        device=torch.device("cpu"),
+    )
+
+    assert components["total_loss"].requires_grad
+    assert components["scores"].requires_grad
+
+    components["scores"].sum().backward()
+
+    assert parameter.grad is not None
+    assert parameter.grad.tolist() == pytest.approx([-2.0, -2.0])
