@@ -12,7 +12,11 @@ if str(REPO_ROOT) not in sys.path:
 from src.rl.data import load_offline_rl_examples
 from src.rl.diffdock_batch_builder import DiffDockGeneratedPoseBatchBuilder
 from src.rl.diffdock_loss import NativeDiffDockLossBackend
-from src.rl.diffdock_model import load_diffdock_score_model, load_score_model_args
+from src.rl.diffdock_model import (
+    load_diffdock_score_model,
+    load_score_model_args,
+    score_model_uses_lm_embeddings,
+)
 from src.utils.artifact_logger import save_csv
 
 
@@ -93,10 +97,10 @@ def main() -> None:
     parser.add_argument(
         "--lm-embeddings",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help=(
             "Enable DiffDock ESM language-model embeddings during graph construction. "
-            "Default is disabled for a fast native-score smoke check."
+            "Default is auto-detected from model_parameters.yml."
         ),
     )
     parser.add_argument(
@@ -135,6 +139,19 @@ def main() -> None:
         model_dir=args.model_dir,
         model_args=args.model_args,
     )
+    model_needs_lm_embeddings = score_model_uses_lm_embeddings(score_model_args)
+    if args.lm_embeddings is None:
+        lm_embeddings = model_needs_lm_embeddings
+    else:
+        lm_embeddings = args.lm_embeddings
+
+    if model_needs_lm_embeddings and not lm_embeddings:
+        raise ValueError(
+            "The score model appears to require ESM/LM receptor embeddings "
+            "from model_parameters.yml, but --no-lm-embeddings was passed. "
+            "Rerun with --lm-embeddings or omit the flag and let the checker "
+            "auto-detect the setting."
+        )
 
     # DiffDock's non-mean loss path expects list data on CUDA. Keep the default
     # model parallel wrapper on CUDA so model(batch) and loss_function(data=batch)
@@ -155,7 +172,7 @@ def main() -> None:
         score_model_args=bundle.score_model_args,
         device=device,
         work_dir=args.work_dir,
-        lm_embeddings=args.lm_embeddings,
+        lm_embeddings=lm_embeddings,
     )
     backend = NativeDiffDockLossBackend(
         repo_root=args.repo_root,
@@ -183,7 +200,8 @@ def main() -> None:
     print(f"checkpoint_path={bundle.checkpoint_path}")
     print(f"device={device}")
     print(f"model_parallel={not no_parallel}")
-    print(f"lm_embeddings={args.lm_embeddings}")
+    print(f"lm_embeddings={lm_embeddings}")
+    print(f"model_needs_lm_embeddings={model_needs_lm_embeddings}")
     print(f"examples={len(examples)}")
     print("complex_id,sample_id,rank,tr_loss,rot_loss,tor_loss,diffdock_loss,s_theta")
     for row in rows:

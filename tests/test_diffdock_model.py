@@ -7,6 +7,7 @@ from src.rl.diffdock_model import (
     _extract_state_dict,
     load_diffdock_score_model,
     load_score_model_args,
+    score_model_uses_lm_embeddings,
 )
 
 
@@ -78,6 +79,20 @@ def test_extract_state_dict_accepts_common_checkpoint_wrappers():
     assert _extract_state_dict({"model_state_dict": {"b": 2}}) == {"b": 2}
     assert _extract_state_dict({"model": {"c": 3}}) == {"c": 3}
     assert _extract_state_dict({"weight": 4}) == {"weight": 4}
+
+
+def test_score_model_uses_lm_embeddings_detects_diffdock_esm_args():
+    class Args:
+        esm_embeddings_path = "data/esm2_3billion_embeddings.pt"
+        lm_embeddings_path = None
+
+    class NoLmArgs:
+        esm_embeddings_path = None
+        lm_embeddings_path = None
+        lm_embedding_type = None
+
+    assert score_model_uses_lm_embeddings(Args()) is True
+    assert score_model_uses_lm_embeddings(NoLmArgs()) is False
 
 
 def test_load_diffdock_score_model_loads_wrapped_module_state(tmp_path):

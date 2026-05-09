@@ -36,6 +36,16 @@ def load_score_model_args(
     return Namespace(**load_yaml(args_path))
 
 
+def score_model_uses_lm_embeddings(score_model_args: Namespace) -> bool:
+    for field_name in ["esm_embeddings_path", "lm_embeddings_path"]:
+        value = getattr(score_model_args, field_name, None)
+        if value not in {None, "", "null", "None", False}:
+            return True
+
+    embedding_type = getattr(score_model_args, "lm_embedding_type", None)
+    return embedding_type not in {None, "", "none", "None", False}
+
+
 def _extract_state_dict(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload

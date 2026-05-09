@@ -818,7 +818,7 @@ example_input = {
 		  --repo-root external/DiffDock \
 		  --model-dir external/DiffDock/workdir/v1.1/score_model \
 		  --limit 4 \
-		  --no-lm-embeddings \
+		  --lm-embeddings \
 		  --output-csv artifacts/tmp/native_score_smoke.csv
 		```
 
