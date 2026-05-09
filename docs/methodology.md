@@ -751,6 +751,12 @@ example_input = {
 		- Loads the actual DiffDock score model, builds a native-loss batch, runs
 		  `model(batch)`, calls `loss_function(..., apply_mean=False)`, and prints
 		  per-sample `tr_loss`, `rot_loss`, `tor_loss`, and `s_theta`.
+	- `scripts/run_native_grpo_smoke.py`
+		- Runs the first real one-step DiffDock GRPO smoke update from an existing
+		  one-complex, four-pose rollout.
+		- Computes RMSD rewards and group-relative advantages, computes native
+		  `s_theta`, applies one clipped surrogate-ratio optimizer step, saves a
+		  PyTorch checkpoint, and writes `logs/train_metrics.jsonl`.
 	- `src/pipeline/run_posttraining.py`
 		- Creates the posttraining run skeleton.
 		- Dispatches to the offline reward-debug workflow.
@@ -820,6 +826,17 @@ example_input = {
 		  --limit 4 \
 		  --lm-embeddings \
 		  --output-csv artifacts/tmp/native_score_smoke.csv
+		```
+	- One-step native DiffDock GRPO smoke on ICRN:
+		```bash
+		./scripts/run_native_grpo_smoke.py \
+		  artifacts/runs/<one_complex_top4_run_id> \
+		  --repo-root external/DiffDock \
+		  --model-dir external/DiffDock/workdir/v1.1/score_model \
+		  --limit 4 \
+		  --lm-embeddings \
+		  --learning-rate 1e-6 \
+		  --run-tag native_grpo_smoke_1bn1
 		```
 
 3. What this validates
