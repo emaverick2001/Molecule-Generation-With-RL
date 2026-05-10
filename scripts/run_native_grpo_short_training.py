@@ -98,6 +98,7 @@ def _subprocess_env() -> dict[str, str]:
     env = dict(os.environ)
     if env.get("CONDA_PREFIX") and not env.get("DIFFDOCK_PYTHON"):
         env["DIFFDOCK_PYTHON"] = str(Path(env["CONDA_PREFIX"]) / "bin" / "python")
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     return env
 
 
@@ -164,6 +165,15 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1.0e-6)
     parser.add_argument("--clip-epsilon", type=float, default=0.2)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--score-batch-size",
+        type=int,
+        default=4,
+        help=(
+            "Number of generated poses to score per native GRPO backward chunk. "
+            "Lower this if DiffDock training runs out of GPU memory."
+        ),
+    )
     parser.add_argument("--eval-every", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-tag", default="native_grpo_short")
@@ -178,6 +188,8 @@ def main() -> None:
         raise ValueError("--group-size must be positive")
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive")
+    if args.score_batch_size <= 0:
+        raise ValueError("--score-batch-size must be positive")
     if args.eval_every < 0:
         raise ValueError("--eval-every must be non-negative")
 
@@ -243,6 +255,8 @@ def main() -> None:
             str(args.clip_epsilon),
             "--max-grad-norm",
             str(args.max_grad_norm),
+            "--score-batch-size",
+            str(args.score_batch_size),
             "--seed",
             str(args.seed),
             "--run-tag",

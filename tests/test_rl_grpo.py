@@ -8,7 +8,10 @@ from src.rl.grpo import (
     compute_surrogate_ratio,
     train_linear_grpo_step,
 )
-from src.rl.native_grpo import native_loss_components_from_raw
+from src.rl.native_grpo import (
+    native_loss_components_from_raw,
+    run_native_diffdock_grpo_step_batched,
+)
 from src.rl.types import RLExample, RewardBreakdown, RolloutRecord
 
 
@@ -135,3 +138,57 @@ def test_native_loss_components_keep_differentiable_total_loss():
 
     assert parameter.grad is not None
     assert parameter.grad.tolist() == pytest.approx([-2.0, -2.0])
+
+
+def test_run_native_diffdock_grpo_step_batched_accumulates_gradients():
+    torch = pytest.importorskip("torch")
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = torch.nn.Parameter(torch.tensor([0.2]))
+
+        def forward(self, batch):
+            prediction = self.bias + batch.reshape(-1)
+            zeros = torch.zeros_like(prediction)
+            return prediction, zeros, zeros
+
+    def tiny_loss_function(
+        tr_pred,
+        rot_pred,
+        tor_pred,
+        *,
+        data,
+        t_to_sigma,
+        device,
+        tr_weight=1.0,
+        rot_weight=1.0,
+        tor_weight=1.0,
+        apply_mean=False,
+        no_torsion=False,
+    ):
+        total = tr_pred.reshape(-1) ** 2
+        zeros = torch.zeros_like(total)
+        return total, total.detach(), zeros.detach(), zeros.detach()
+
+    model = TinyModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    before = float(model.bias.detach())
+
+    result, state_dict = run_native_diffdock_grpo_step_batched(
+        model=model,
+        batches=[torch.tensor([1.0]), torch.tensor([-1.0])],
+        advantages_by_batch=[[1.0], [-1.0]],
+        loss_function=tiny_loss_function,
+        t_to_sigma=lambda *args, **kwargs: None,
+        device=torch.device("cpu"),
+        optimizer=optimizer,
+        torch_module=torch,
+        max_grad_norm=1.0,
+    )
+
+    assert result.grad_norm is not None
+    assert len(result.scores_before) == 2
+    assert len(result.scores_after) == 2
+    assert state_dict["bias"].shape == torch.Size([1])
+    assert float(model.bias.detach()) != pytest.approx(before)

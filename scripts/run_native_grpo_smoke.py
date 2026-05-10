@@ -18,7 +18,10 @@ from src.rl.diffdock_model import (
     load_score_model_args,
     score_model_uses_lm_embeddings,
 )
-from src.rl.native_grpo import run_native_diffdock_grpo_step
+from src.rl.native_grpo import (
+    run_native_diffdock_grpo_step,
+    run_native_diffdock_grpo_step_batched,
+)
 from src.rl.rewards import build_reward_rows
 from src.rl.rollouts import build_rollout_records, compute_group_advantages
 from src.rl.config import RewardConfig, RolloutConfig
@@ -122,6 +125,11 @@ def _score_rows(records, result) -> list[dict]:
     return rows
 
 
+def _chunked(items, chunk_size: int):
+    for start in range(0, len(items), chunk_size):
+        yield items[start:start + chunk_size]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -149,6 +157,16 @@ def main() -> None:
     parser.add_argument("--clip-epsilon", type=float, default=0.2)
     parser.add_argument("--max-score-delta", type=float, default=20.0)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--score-batch-size",
+        type=int,
+        default=0,
+        help=(
+            "If positive, build/scoring DiffDock graphs in chunks and accumulate "
+            "gradients before one optimizer step. Use this to avoid GPU OOM on "
+            "multi-complex rollouts."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--run-root", default="artifacts/runs")
@@ -178,6 +196,8 @@ def main() -> None:
     samples_per_complex = args.samples_per_complex or args.limit
     if samples_per_complex <= 0:
         raise ValueError("--samples-per-complex must be positive")
+    if args.score_batch_size < 0:
+        raise ValueError("--score-batch-size must be non-negative")
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive")
 
@@ -235,27 +255,49 @@ def main() -> None:
         work_dir=args.work_dir,
         lm_embeddings=args.lm_embeddings,
     )
-    batch = batch_builder(examples)
     loss_function = import_diffdock_loss_function(args.repo_root)
     optimizer = torch.optim.Adam(
         [parameter for parameter in bundle.model.parameters() if parameter.requires_grad],
         lr=args.learning_rate,
     )
 
-    result, model_state_dict = run_native_diffdock_grpo_step(
-        model=bundle.model,
-        batch=batch,
-        advantages=[float(record.advantage) for record in rollout_records],
-        loss_function=loss_function,
-        t_to_sigma=bundle.t_to_sigma,
-        device=device,
-        optimizer=optimizer,
-        torch_module=torch,
-        no_torsion=getattr(bundle.score_model_args, "no_torsion", False),
-        clip_epsilon=args.clip_epsilon,
-        max_score_delta=args.max_score_delta,
-        max_grad_norm=args.max_grad_norm,
-    )
+    if args.score_batch_size and args.score_batch_size < len(examples):
+        example_batches = list(_chunked(examples, args.score_batch_size))
+        record_batches = list(_chunked(rollout_records, args.score_batch_size))
+        batches = [batch_builder(batch_examples) for batch_examples in example_batches]
+        result, model_state_dict = run_native_diffdock_grpo_step_batched(
+            model=bundle.model,
+            batches=batches,
+            advantages_by_batch=[
+                [float(record.advantage) for record in batch_records]
+                for batch_records in record_batches
+            ],
+            loss_function=loss_function,
+            t_to_sigma=bundle.t_to_sigma,
+            device=device,
+            optimizer=optimizer,
+            torch_module=torch,
+            no_torsion=getattr(bundle.score_model_args, "no_torsion", False),
+            clip_epsilon=args.clip_epsilon,
+            max_score_delta=args.max_score_delta,
+            max_grad_norm=args.max_grad_norm,
+        )
+    else:
+        batch = batch_builder(examples)
+        result, model_state_dict = run_native_diffdock_grpo_step(
+            model=bundle.model,
+            batch=batch,
+            advantages=[float(record.advantage) for record in rollout_records],
+            loss_function=loss_function,
+            t_to_sigma=bundle.t_to_sigma,
+            device=device,
+            optimizer=optimizer,
+            torch_module=torch,
+            no_torsion=getattr(bundle.score_model_args, "no_torsion", False),
+            clip_epsilon=args.clip_epsilon,
+            max_score_delta=args.max_score_delta,
+            max_grad_norm=args.max_grad_norm,
+        )
 
     checkpoint_path = checkpoint_dir / "native_grpo_step_000.pt"
     torch.save(
@@ -269,6 +311,7 @@ def main() -> None:
                 "ckpt": args.ckpt,
                 "seed": args.seed,
                 "samples_per_complex": samples_per_complex,
+                "score_batch_size": args.score_batch_size,
                 "learning_rate": args.learning_rate,
                 "clip_epsilon": args.clip_epsilon,
                 "max_score_delta": args.max_score_delta,
@@ -300,6 +343,7 @@ def main() -> None:
         "num_examples": len(examples),
         "num_rollout_records": len(rollout_records),
         "samples_per_complex": samples_per_complex,
+        "score_batch_size": args.score_batch_size,
         "reward": reward_summary,
         "training": {
             "loss": result.loss,

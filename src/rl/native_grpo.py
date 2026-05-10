@@ -208,6 +208,11 @@ def _state_dict(model: Any) -> Any:
     return target.state_dict()
 
 
+def _empty_cuda_cache(*, torch_module: Any, device: Any) -> None:
+    if getattr(device, "type", None) == "cuda" and hasattr(torch_module, "cuda"):
+        torch_module.cuda.empty_cache()
+
+
 def run_native_diffdock_grpo_step(
     *,
     model: Any,
@@ -326,6 +331,205 @@ def run_native_diffdock_grpo_step(
         ratios_before=_to_float_list(objective["ratios"]),
         clipped_ratios_before=_to_float_list(objective["clipped_ratios"]),
         objective_terms_before=_to_float_list(objective["objective_terms"]),
+    )
+
+    return result, _state_dict(model)
+
+
+def run_native_diffdock_grpo_step_batched(
+    *,
+    model: Any,
+    batches: Sequence[Any],
+    advantages_by_batch: Sequence[Sequence[float]],
+    loss_function: Callable,
+    t_to_sigma: Callable,
+    device: Any,
+    optimizer: Any,
+    torch_module: Any,
+    no_torsion: bool = False,
+    weights: DiffDockLossWeights | None = None,
+    clip_epsilon: float = 0.2,
+    max_score_delta: float = 20.0,
+    max_grad_norm: float | None = 1.0,
+) -> tuple[NativeGRPOStepResult, Any]:
+    """
+    Run one native GRPO optimizer step with gradient accumulation.
+
+    DiffDock receptor graphs can be large enough that scoring every generated pose
+    in one backward pass exhausts GPU memory. This keeps the same old-policy
+    scores and objective weighting, but backpropagates smaller chunks before one
+    final optimizer step.
+    """
+    if len(batches) != len(advantages_by_batch):
+        raise ValueError("batches and advantages_by_batch must have the same length")
+    if not batches:
+        raise ValueError("At least one batch is required")
+
+    total_examples = sum(len(advantages) for advantages in advantages_by_batch)
+    if total_examples <= 0:
+        raise ValueError("At least one advantage is required")
+
+    trainable_parameters = _trainable_parameters(model)
+    if not trainable_parameters:
+        raise ValueError("No trainable DiffDock parameters found for GRPO step")
+
+    model.train()
+    old_scores_by_batch = []
+
+    with torch_module.no_grad():
+        for batch in batches:
+            raw_old = _call_diffdock_loss_function(
+                model=model,
+                batch=batch,
+                loss_function=loss_function,
+                t_to_sigma=t_to_sigma,
+                device=device,
+                no_torsion=no_torsion,
+            )
+            old_components = native_loss_components_from_raw(
+                raw_old,
+                torch_module=torch_module,
+                device=device,
+                weights=weights,
+            )
+            old_scores_by_batch.append(old_components["scores"].detach())
+            del raw_old, old_components
+            _empty_cuda_cache(torch_module=torch_module, device=device)
+
+    optimizer.zero_grad(set_to_none=True)
+
+    scaled_loss_total = 0.0
+    old_scores = []
+    scores_before = []
+    tr_loss_before = []
+    rot_loss_before = []
+    tor_loss_before = []
+    total_loss_before = []
+    ratios_before = []
+    clipped_ratios_before = []
+    objective_terms_before = []
+
+    for batch, batch_advantages, batch_old_scores in zip(
+        batches,
+        advantages_by_batch,
+        old_scores_by_batch,
+        strict=True,
+    ):
+        raw_before = _call_diffdock_loss_function(
+            model=model,
+            batch=batch,
+            loss_function=loss_function,
+            t_to_sigma=t_to_sigma,
+            device=device,
+            no_torsion=no_torsion,
+        )
+        before_components = native_loss_components_from_raw(
+            raw_before,
+            torch_module=torch_module,
+            device=device,
+            weights=weights,
+        )
+        advantages_tensor = torch_module.as_tensor(
+            batch_advantages,
+            dtype=torch_module.float32,
+            device=device,
+        ).reshape(-1)
+        if advantages_tensor.numel() != before_components["scores"].numel():
+            raise ValueError(
+                "Number of advantages does not match native score count: "
+                f"{advantages_tensor.numel()} != {before_components['scores'].numel()}"
+            )
+
+        batch_loss_mean, objective = compute_clipped_grpo_loss_from_scores(
+            current_scores=before_components["scores"],
+            old_scores=batch_old_scores,
+            advantages=advantages_tensor,
+            torch_module=torch_module,
+            clip_epsilon=clip_epsilon,
+            max_score_delta=max_score_delta,
+        )
+        scaled_batch_loss = batch_loss_mean * (advantages_tensor.numel() / total_examples)
+        scaled_batch_loss.backward()
+        scaled_loss_total += float(scaled_batch_loss.detach().cpu())
+
+        old_scores.extend(_to_float_list(batch_old_scores))
+        scores_before.extend(_to_float_list(before_components["scores"]))
+        tr_loss_before.extend(_to_float_list(before_components["tr_loss"]))
+        rot_loss_before.extend(_to_float_list(before_components["rot_loss"]))
+        tor_loss_before.extend(_to_float_list(before_components["tor_loss"]))
+        total_loss_before.extend(_to_float_list(before_components["total_loss"]))
+        ratios_before.extend(_to_float_list(objective["ratios"]))
+        clipped_ratios_before.extend(_to_float_list(objective["clipped_ratios"]))
+        objective_terms_before.extend(_to_float_list(objective["objective_terms"]))
+
+        del (
+            raw_before,
+            before_components,
+            advantages_tensor,
+            batch_loss_mean,
+            scaled_batch_loss,
+            objective,
+        )
+        _empty_cuda_cache(torch_module=torch_module, device=device)
+
+    grad_norm = None
+    if max_grad_norm is not None:
+        grad_norm_tensor = torch_module.nn.utils.clip_grad_norm_(
+            trainable_parameters,
+            max_grad_norm,
+        )
+        grad_norm = float(grad_norm_tensor.detach().cpu())
+
+    optimizer.step()
+
+    scores_after = []
+    tr_loss_after = []
+    rot_loss_after = []
+    tor_loss_after = []
+    total_loss_after = []
+
+    model.eval()
+    with torch_module.no_grad():
+        for batch in batches:
+            raw_after = _call_diffdock_loss_function(
+                model=model,
+                batch=batch,
+                loss_function=loss_function,
+                t_to_sigma=t_to_sigma,
+                device=device,
+                no_torsion=no_torsion,
+            )
+            after_components = native_loss_components_from_raw(
+                raw_after,
+                torch_module=torch_module,
+                device=device,
+                weights=weights,
+            )
+            scores_after.extend(_to_float_list(after_components["scores"]))
+            tr_loss_after.extend(_to_float_list(after_components["tr_loss"]))
+            rot_loss_after.extend(_to_float_list(after_components["rot_loss"]))
+            tor_loss_after.extend(_to_float_list(after_components["tor_loss"]))
+            total_loss_after.extend(_to_float_list(after_components["total_loss"]))
+            del raw_after, after_components
+            _empty_cuda_cache(torch_module=torch_module, device=device)
+
+    result = NativeGRPOStepResult(
+        loss=scaled_loss_total,
+        grad_norm=grad_norm,
+        old_scores=old_scores,
+        scores_before=scores_before,
+        scores_after=scores_after,
+        tr_loss_before=tr_loss_before,
+        rot_loss_before=rot_loss_before,
+        tor_loss_before=tor_loss_before,
+        total_loss_before=total_loss_before,
+        tr_loss_after=tr_loss_after,
+        rot_loss_after=rot_loss_after,
+        tor_loss_after=tor_loss_after,
+        total_loss_after=total_loss_after,
+        ratios_before=ratios_before,
+        clipped_ratios_before=clipped_ratios_before,
+        objective_terms_before=objective_terms_before,
     )
 
     return result, _state_dict(model)
