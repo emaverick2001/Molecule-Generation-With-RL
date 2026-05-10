@@ -339,7 +339,7 @@ def run_native_diffdock_grpo_step(
 def run_native_diffdock_grpo_step_batched(
     *,
     model: Any,
-    batches: Sequence[Any],
+    batches: Sequence[Any] | Callable[[int], Any],
     advantages_by_batch: Sequence[Sequence[float]],
     loss_function: Callable,
     t_to_sigma: Callable,
@@ -360,9 +360,10 @@ def run_native_diffdock_grpo_step_batched(
     scores and objective weighting, but backpropagates smaller chunks before one
     final optimizer step.
     """
-    if len(batches) != len(advantages_by_batch):
+    batch_count = len(advantages_by_batch)
+    if not callable(batches) and len(batches) != batch_count:
         raise ValueError("batches and advantages_by_batch must have the same length")
-    if not batches:
+    if batch_count == 0:
         raise ValueError("At least one batch is required")
 
     total_examples = sum(len(advantages) for advantages in advantages_by_batch)
@@ -377,7 +378,8 @@ def run_native_diffdock_grpo_step_batched(
     old_scores_by_batch = []
 
     with torch_module.no_grad():
-        for batch in batches:
+        for batch_index in range(batch_count):
+            batch = batches(batch_index) if callable(batches) else batches[batch_index]
             raw_old = _call_diffdock_loss_function(
                 model=model,
                 batch=batch,
@@ -393,7 +395,7 @@ def run_native_diffdock_grpo_step_batched(
                 weights=weights,
             )
             old_scores_by_batch.append(old_components["scores"].detach())
-            del raw_old, old_components
+            del batch, raw_old, old_components
             _empty_cuda_cache(torch_module=torch_module, device=device)
 
     optimizer.zero_grad(set_to_none=True)
@@ -409,12 +411,10 @@ def run_native_diffdock_grpo_step_batched(
     clipped_ratios_before = []
     objective_terms_before = []
 
-    for batch, batch_advantages, batch_old_scores in zip(
-        batches,
-        advantages_by_batch,
-        old_scores_by_batch,
-        strict=True,
+    for batch_index, (batch_advantages, batch_old_scores) in enumerate(
+        zip(advantages_by_batch, old_scores_by_batch, strict=True)
     ):
+        batch = batches(batch_index) if callable(batches) else batches[batch_index]
         raw_before = _call_diffdock_loss_function(
             model=model,
             batch=batch,
@@ -463,6 +463,7 @@ def run_native_diffdock_grpo_step_batched(
         objective_terms_before.extend(_to_float_list(objective["objective_terms"]))
 
         del (
+            batch,
             raw_before,
             before_components,
             advantages_tensor,
@@ -490,7 +491,8 @@ def run_native_diffdock_grpo_step_batched(
 
     model.eval()
     with torch_module.no_grad():
-        for batch in batches:
+        for batch_index in range(batch_count):
+            batch = batches(batch_index) if callable(batches) else batches[batch_index]
             raw_after = _call_diffdock_loss_function(
                 model=model,
                 batch=batch,
@@ -510,7 +512,7 @@ def run_native_diffdock_grpo_step_batched(
             rot_loss_after.extend(_to_float_list(after_components["rot_loss"]))
             tor_loss_after.extend(_to_float_list(after_components["tor_loss"]))
             total_loss_after.extend(_to_float_list(after_components["total_loss"]))
-            del raw_after, after_components
+            del batch, raw_after, after_components
             _empty_cuda_cache(torch_module=torch_module, device=device)
 
     result = NativeGRPOStepResult(

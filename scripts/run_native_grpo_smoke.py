@@ -130,6 +130,15 @@ def _chunked(items, chunk_size: int):
         yield items[start:start + chunk_size]
 
 
+def _prepare_batch_for_model(batch, *, no_parallel: bool, device):
+    if not no_parallel or not isinstance(batch, list):
+        return batch
+
+    from torch_geometric.data import Batch
+
+    return Batch.from_data_list(batch).to(device)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -264,10 +273,17 @@ def main() -> None:
     if args.score_batch_size and args.score_batch_size < len(examples):
         example_batches = list(_chunked(examples, args.score_batch_size))
         record_batches = list(_chunked(rollout_records, args.score_batch_size))
-        batches = [batch_builder(batch_examples) for batch_examples in example_batches]
+
+        def build_model_batch(batch_index: int):
+            return _prepare_batch_for_model(
+                batch_builder(example_batches[batch_index]),
+                no_parallel=no_parallel,
+                device=device,
+            )
+
         result, model_state_dict = run_native_diffdock_grpo_step_batched(
             model=bundle.model,
-            batches=batches,
+            batches=build_model_batch,
             advantages_by_batch=[
                 [float(record.advantage) for record in batch_records]
                 for batch_records in record_batches
@@ -283,7 +299,11 @@ def main() -> None:
             max_grad_norm=args.max_grad_norm,
         )
     else:
-        batch = batch_builder(examples)
+        batch = _prepare_batch_for_model(
+            batch_builder(examples),
+            no_parallel=no_parallel,
+            device=device,
+        )
         result, model_state_dict = run_native_diffdock_grpo_step(
             model=bundle.model,
             batch=batch,
