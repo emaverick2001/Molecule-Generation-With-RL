@@ -416,6 +416,11 @@ def run_native_diffdock_grpo_step_batched(
             del batch, raw_old, old_components
             _empty_cuda_cache(torch_module=torch_module, device=device)
 
+    if len(old_scores_by_batch) != batch_count:
+        raise RuntimeError(
+            "Internal error: old-score batch count does not match advantage batch count"
+        )
+
     optimizer.zero_grad(set_to_none=True)
 
     scaled_loss_total = 0.0
@@ -430,7 +435,7 @@ def run_native_diffdock_grpo_step_batched(
     objective_terms_before = []
 
     for batch_index, (batch_advantages, batch_old_scores) in enumerate(
-        zip(advantages_by_batch, old_scores_by_batch, strict=True)
+        zip(advantages_by_batch, old_scores_by_batch)
     ):
         batch = batches(batch_index) if callable(batches) else batches[batch_index]
         raw_before = _call_diffdock_loss_function(
