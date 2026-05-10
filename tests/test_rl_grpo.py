@@ -9,6 +9,8 @@ from src.rl.grpo import (
     train_linear_grpo_step,
 )
 from src.rl.native_grpo import (
+    DiffDockModelLossBatch,
+    _call_diffdock_loss_function,
     native_loss_components_from_raw,
     run_native_diffdock_grpo_step_batched,
 )
@@ -192,3 +194,51 @@ def test_run_native_diffdock_grpo_step_batched_accumulates_gradients():
     assert len(result.scores_after) == 2
     assert state_dict["bias"].shape == torch.Size([1])
     assert float(model.bias.detach()) != pytest.approx(before)
+
+
+def test_call_diffdock_loss_function_splits_model_input_from_loss_data():
+    torch = pytest.importorskip("torch")
+
+    class TinyModel(torch.nn.Module):
+        def forward(self, batch):
+            assert batch == "model-batch"
+            return (
+                torch.tensor([1.0], requires_grad=True),
+                torch.tensor([0.0]),
+                torch.tensor([0.0]),
+                None,
+            )
+
+    def tiny_loss_function(
+        tr_pred,
+        rot_pred,
+        tor_pred,
+        sidechain_pred,
+        *,
+        data,
+        t_to_sigma,
+        device,
+        tr_weight=1.0,
+        rot_weight=1.0,
+        tor_weight=1.0,
+        apply_mean=False,
+        no_torsion=False,
+        backbone_weight=0.0,
+        sidechain_weight=0.0,
+    ):
+        assert data == ["loss-graph-0"]
+        return tr_pred, tr_pred.detach(), rot_pred.detach(), tor_pred.detach()
+
+    raw_losses = _call_diffdock_loss_function(
+        model=TinyModel(),
+        batch=DiffDockModelLossBatch(
+            model_input="model-batch",
+            loss_data=["loss-graph-0"],
+        ),
+        loss_function=tiny_loss_function,
+        t_to_sigma=lambda *args, **kwargs: None,
+        device=torch.device("cpu"),
+        no_torsion=False,
+    )
+
+    assert raw_losses[0].requires_grad

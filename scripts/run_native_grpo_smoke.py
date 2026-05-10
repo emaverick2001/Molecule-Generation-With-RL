@@ -19,6 +19,7 @@ from src.rl.diffdock_model import (
     score_model_uses_lm_embeddings,
 )
 from src.rl.native_grpo import (
+    DiffDockModelLossBatch,
     run_native_diffdock_grpo_step,
     run_native_diffdock_grpo_step_batched,
 )
@@ -136,7 +137,10 @@ def _prepare_batch_for_model(batch, *, no_parallel: bool, device):
 
     from torch_geometric.data import Batch
 
-    return Batch.from_data_list(batch).to(device)
+    return DiffDockModelLossBatch(
+        model_input=Batch.from_data_list(batch).to(device),
+        loss_data=batch,
+    )
 
 
 def main() -> None:

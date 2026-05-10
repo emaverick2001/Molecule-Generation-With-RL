@@ -27,6 +27,24 @@ class NativeGRPOStepResult:
     objective_terms_before: list[float]
 
 
+@dataclass(frozen=True)
+class DiffDockModelLossBatch:
+    model_input: Any
+    loss_data: Any
+
+
+def _model_input(batch: Any) -> Any:
+    if isinstance(batch, DiffDockModelLossBatch):
+        return batch.model_input
+    return batch
+
+
+def _loss_data(batch: Any) -> Any:
+    if isinstance(batch, DiffDockModelLossBatch):
+        return batch.loss_data
+    return batch
+
+
 def _as_1d_tensor(value: Any, *, torch_module: Any, device: Any) -> Any:
     if not hasattr(value, "reshape"):
         value = torch_module.as_tensor(value, dtype=torch_module.float32, device=device)
@@ -55,7 +73,7 @@ def _call_diffdock_loss_function(
     device: Any,
     no_torsion: bool,
 ) -> Any:
-    predictions = model(batch)
+    predictions = model(_model_input(batch))
     if not isinstance(predictions, Sequence):
         raise TypeError("DiffDock model must return prediction tuple/list")
     if len(predictions) < 3:
@@ -66,7 +84,7 @@ def _call_diffdock_loss_function(
 
     signature = inspect.signature(loss_function)
     kwargs = {
-        "data": batch,
+        "data": _loss_data(batch),
         "t_to_sigma": t_to_sigma,
         "device": device,
         "tr_weight": 1.0,
